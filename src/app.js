@@ -35,6 +35,7 @@ function buildApp() {
   app.use(require('./routes/phases'));
   app.use(require('./routes/standings'));
   app.use(require('./routes/sync'));
+  app.use(require('./routes/chat'));
 
   app.use((req, res) => res.status(404).json({ error: 'Not found' }));
 

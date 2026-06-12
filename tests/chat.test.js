@@ -1,0 +1,68 @@
+jest.mock('../src/db/pool');
+
+process.env.JWT_SECRET = 'test-secret';
+
+const request = require('supertest');
+const db = require('../src/db/pool');
+const { signToken } = require('../src/middleware/auth');
+const { buildApp } = require('../src/app');
+
+const app = buildApp();
+const playerBearer = (pid = 'p_chat') => `Bearer ${signToken({ role: 'player', pid })}`;
+const adminBearer = `Bearer ${signToken({ role: 'admin' })}`;
+
+beforeEach(() => jest.clearAllMocks());
+
+describe('GET /api/chat', () => {
+  test('401 without a token', async () => {
+    const res = await request(app).get('/api/chat');
+    expect(res.status).toBe(401);
+  });
+
+  test('returns messages for a logged-in player', async () => {
+    db.query.mockResolvedValue({ rows: [{ id: 1, player_id: 'p1', name: 'Ana', body: 'oi', created_at: '2026-06-12T00:00:00Z' }] });
+    const res = await request(app).get('/api/chat').set('Authorization', playerBearer());
+    expect(res.status).toBe(200);
+    expect(res.body.messages).toHaveLength(1);
+    expect(res.body.messages[0]).toMatchObject({ name: 'Ana', body: 'oi' });
+  });
+});
+
+describe('POST /api/chat', () => {
+  test('rejects an empty message', async () => {
+    const res = await request(app).post('/api/chat').set('Authorization', playerBearer('p_empty')).send({ body: '   ' });
+    expect(res.status).toBe(400);
+  });
+
+  test('rejects an over-long message', async () => {
+    const res = await request(app).post('/api/chat').set('Authorization', playerBearer('p_long')).send({ body: 'x'.repeat(501) });
+    expect(res.status).toBe(400);
+  });
+
+  test('posts a message with the player name snapshot', async () => {
+    db.query.mockImplementation((sql) => {
+      if (/FROM players WHERE id/.test(sql)) return Promise.resolve({ rows: [{ name: 'João' }] });
+      if (/INSERT INTO chat_messages/.test(sql)) {
+        return Promise.resolve({ rows: [{ id: 5, player_id: 'p_ok', name: 'João', body: 'olá pessoal', created_at: '2026-06-12T01:00:00Z' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    const res = await request(app).post('/api/chat').set('Authorization', playerBearer('p_ok')).send({ body: 'olá pessoal' });
+    expect(res.status).toBe(200);
+    expect(res.body.message).toMatchObject({ name: 'João', body: 'olá pessoal' });
+  });
+});
+
+describe('DELETE /api/chat/:id', () => {
+  test('requires admin', async () => {
+    const res = await request(app).delete('/api/chat/1').set('Authorization', playerBearer('p_x'));
+    expect(res.status).toBe(403);
+  });
+
+  test('admin can delete', async () => {
+    db.query.mockResolvedValue({ rowCount: 1 });
+    const res = await request(app).delete('/api/chat/1').set('Authorization', adminBearer);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ ok: true });
+  });
+});
