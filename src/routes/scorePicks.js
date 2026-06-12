@@ -61,8 +61,8 @@ router.get('/api/my-score-picks', requireRole('player', 'admin'), async (req, re
 // Player: SAVE score picks, match by match. Body: { picks:[{matchId,home,away}] }
 // Rules (família pool — per product owner):
 //  - pick whenever you want; no registration deadline, no one-shot-per-phase lock;
-//  - a pick stays editable until ITS match kicks off (per-match lock);
-//  - matches that already kicked off are skipped (their picks are frozen);
+//  - a pick is FINAL once submitted — it can never be changed (insert-only);
+//  - matches that already kicked off are skipped (you can't pick them anymore);
 //  - any subset of matches can be submitted — no need to cover a whole phase.
 router.post('/api/score-picks', requireRole('player', 'admin'), async (req, res, next) => {
   try {
@@ -106,9 +106,7 @@ router.post('/api/score-picks', requireRole('player', 'admin'), async (req, res,
           await client.query(
             `INSERT INTO score_picks (player_id, match_id, pred_home, pred_away, phase, updated_at)
              VALUES ($1, $2, $3, $4, $5, NOW())
-             ON CONFLICT (player_id, match_id) DO UPDATE SET
-               pred_home = EXCLUDED.pred_home, pred_away = EXCLUDED.pred_away,
-               phase = EXCLUDED.phase, updated_at = NOW()`,
+             ON CONFLICT (player_id, match_id) DO NOTHING`,
             [pid, m.id, h, a, m.stage || null]
           );
         }
