@@ -41,126 +41,88 @@ router.get('/api/my-score-picks', requireRole('player', 'admin'), async (req, re
     // client drops its stored token and returns to the login screen.
     const { rows: exists } = await db.query('SELECT 1 FROM players WHERE id = $1', [pid]);
     if (!exists.length) return res.status(401).json({ error: 'player no longer exists' });
-    const [{ rows }, { rows: subs }, { rows: awardRows }] = await Promise.all([
+    const [{ rows }, { rows: awardRows }] = await Promise.all([
       db.query(
         'SELECT match_id, pred_home, pred_away, phase, updated_at FROM score_picks WHERE player_id = $1',
         [pid]
       ),
-      db.query('SELECT phase FROM phase_submissions WHERE player_id = $1', [pid]),
       db.query('SELECT kind, pick FROM award_picks WHERE player_id = $1', [pid]),
     ]);
     const awards = {};
     for (const a of awardRows) awards[a.kind] = a.pick;
-    res.json({ picks: rows, lockedPhases: subs.map((s) => s.phase), awards });
+    // Picks are locked per-match (once a match kicks off), never per-phase, so
+    // there are no locked phases to report.
+    res.json({ picks: rows, lockedPhases: [], awards });
   } catch (e) {
     next(e);
   }
 });
 
-// Which phase a stage belongs to, for the one-shot-per-phase lock.
-function phaseOf(stage) {
-  if (stage === 'GROUP_STAGE') return 'group';
-  if (stage === 'LAST_32') return 'r32';
-  if (stage === 'LAST_16') return 'r16';
-  if (stage === 'QUARTER_FINALS') return 'qf';
-  if (stage === 'SEMI_FINALS' || stage === 'THIRD_PLACE') return 'sf';
-  if (stage === 'FINAL') return 'final';
-  return 'group';
-}
-
-// Player: SUBMIT a whole phase in one shot. Body: { phase, picks:[{matchId,home,away}] }
-// Rules (per product owner):
-//  - one submission per phase: once submitted, that phase is LOCKED for everyone
-//    (player AND admin) — no edits;
-//  - the submission must cover EVERY match of that phase (single shot);
-//  - individual matches already kicked off still can't be picked.
+// Player: SAVE score picks, match by match. Body: { picks:[{matchId,home,away}] }
+// Rules (família pool — per product owner):
+//  - pick whenever you want; no registration deadline, no one-shot-per-phase lock;
+//  - a pick stays editable until ITS match kicks off (per-match lock);
+//  - matches that already kicked off are skipped (their picks are frozen);
+//  - any subset of matches can be submitted — no need to cover a whole phase.
 router.post('/api/score-picks', requireRole('player', 'admin'), async (req, res, next) => {
   try {
     const pid = req.auth.pid || (req.body && req.body.playerId);
     if (!pid) return res.status(400).json({ error: 'token has no player id' });
 
-    const phase = String((req.body && req.body.phase) || 'group');
     const list = Array.isArray(req.body && req.body.picks) ? req.body.picks : [];
-    if (!list.length) return res.status(400).json({ error: 'no picks provided' });
-
-    // Optional tournament award bets, set with the first (group) submission.
-    const awards = phase === 'group' ? parseAwards(req.body && req.body.awards) : [];
-
-    // Already submitted this phase? Hard stop — irreversible.
-    const sub = await db.query(
-      'SELECT 1 FROM phase_submissions WHERE player_id = $1 AND phase = $2',
-      [pid, phase]
-    );
-    if (sub.rows.length) {
-      return res.status(409).json({ error: 'This phase is already locked in — picks cannot be changed.' });
+    // Optional tournament award bets (golden boot / best player) — set once.
+    const awards = parseAwards(req.body && req.body.awards);
+    if (!list.length && !awards.length) {
+      return res.status(400).json({ error: 'no picks provided' });
     }
 
-    // All matches of this phase must be covered and none kicked off yet.
-    const { rows: phaseMatches } = await db.query(
-      'SELECT id, utc_date, status, stage FROM matches'
-    );
-    const inPhase = phaseMatches.filter((m) => phaseOf(m.stage) === phase);
-    if (!inPhase.length) {
-      return res.status(400).json({ error: 'No matches for this phase yet.' });
-    }
-    const byId = Object.fromEntries(inPhase.map((m) => [String(m.id), m]));
-    const submittedIds = new Set(list.map((p) => String(p.matchId)));
+    const { rows: allMatches } = await db.query('SELECT id, utc_date, status, stage FROM matches');
+    const byId = Object.fromEntries(allMatches.map((m) => [String(m.id), m]));
 
-    // Every phase match must be present in the submission.
-    const missing = inPhase.filter((m) => !submittedIds.has(String(m.id)));
-    if (missing.length) {
-      return res.status(400).json({
-        error: `Submit all ${inPhase.length} matches of this phase in one shot (${missing.length} missing).`,
-      });
-    }
-    // None may have kicked off.
-    const started = inPhase.filter((m) => isLocked(m));
-    if (started.length) {
-      return res.status(423).json({ error: 'This phase has already started — submissions are closed.' });
-    }
-    // Validate every scoreline.
+    // Split the submitted picks into ones we can save (match exists and hasn't
+    // kicked off) and ones to skip (already started — frozen). Validate scores.
+    const savable = [];
+    const skipped = [];
     for (const p of list) {
-      if (!byId[String(p.matchId)]) {
-        return res.status(400).json({ error: `Match ${p.matchId} is not in phase ${phase}.` });
-      }
+      const m = byId[String(p.matchId)];
+      if (!m) return res.status(400).json({ error: `Match ${p.matchId} not found.` });
       const h = Number(p.home); const a = Number(p.away);
       if (!Number.isInteger(h) || !Number.isInteger(a) || h < 0 || a < 0 || h > 99 || a > 99) {
         return res.status(400).json({ error: `Invalid score for match ${p.matchId}.` });
       }
+      if (isLocked(m)) { skipped.push(String(m.id)); continue; }
+      savable.push({ m, h, a });
+    }
+
+    if (!savable.length && !awards.length) {
+      return res.status(423).json({ error: 'Those matches have already started — picks are closed for them.' });
     }
 
     await emit(
-      'score_picks.submit',
-      { actor: req.auth.role, entity: 'phase', entityId: pid, data: { phase, count: list.length } },
+      'score_picks.save',
+      { actor: req.auth.role, entity: 'score_picks', entityId: pid, data: { saved: savable.length, skipped: skipped.length } },
       async (client) => {
-        for (const p of list) {
-          const m = byId[String(p.matchId)];
+        for (const { m, h, a } of savable) {
           await client.query(
             `INSERT INTO score_picks (player_id, match_id, pred_home, pred_away, phase, updated_at)
              VALUES ($1, $2, $3, $4, $5, NOW())
              ON CONFLICT (player_id, match_id) DO UPDATE SET
                pred_home = EXCLUDED.pred_home, pred_away = EXCLUDED.pred_away,
                phase = EXCLUDED.phase, updated_at = NOW()`,
-            [pid, m.id, Number(p.home), Number(p.away), m.stage || null]
+            [pid, m.id, h, a, m.stage || null]
           );
         }
-        // Lock the phase for this player — irreversible.
-        await client.query(
-          `INSERT INTO phase_submissions (player_id, phase) VALUES ($1, $2)
-           ON CONFLICT (player_id, phase) DO NOTHING`,
-          [pid, phase]
-        );
         // Persist award bets (golden boot / best player) — set once, can't change.
-        for (const a of awards) {
+        for (const aw of awards) {
           await client.query(
             `INSERT INTO award_picks (player_id, kind, pick) VALUES ($1, $2, $3)
              ON CONFLICT (player_id, kind) DO NOTHING`,
-            [pid, a.kind, a.pick]
+            [pid, aw.kind, aw.pick]
           );
         }
       }
     );
-    res.json({ ok: true, phase, locked: true, count: list.length, awards: awards.length });
+    res.json({ ok: true, saved: savable.length, skipped: skipped.length, awards: awards.length });
   } catch (e) {
     next(e);
   }

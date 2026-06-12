@@ -64,7 +64,6 @@ describe('POST /api/register (public self-registration)', () => {
     const client = { query: jest.fn().mockResolvedValue({ rows: [] }), release: jest.fn() };
     db.getClient.mockResolvedValue(client);
     // existing-match lookup → a locked, phone-less player with the same name
-    db.query.mockResolvedValueOnce({ rows: [] });                                  // isPastDeadline
     db.query.mockResolvedValueOnce({ rows: [{ id: 'p_admin', locked: true, phone_digits: null }] });
     const res = await request(app).post('/api/register').send(VALID);
     expect(res.status).toBe(200);
@@ -74,7 +73,6 @@ describe('POST /api/register (public self-registration)', () => {
   test('re-registering the SAME phone refreshes instead of blocking', async () => {
     const client = { query: jest.fn().mockResolvedValue({ rows: [] }), release: jest.fn() };
     db.getClient.mockResolvedValue(client);
-    db.query.mockResolvedValueOnce({ rows: [] });                                  // isPastDeadline
     db.query.mockResolvedValueOnce({ rows: [{ id: 'p_me', locked: true, phone_digits: '4155551234' }] });
     const res = await request(app).post('/api/register').send(VALID);
     expect(res.status).toBe(200);
@@ -90,11 +88,12 @@ describe('POST /api/matches/:id/upset (admin)', () => {
 });
 
 describe('GET /api/config', () => {
-  test('returns the deadline + registrationOpen', async () => {
-    db.query.mockResolvedValue({ rows: [{ value: '2099-01-01T00:00:00.000Z' }] });
+  test('always reports registration open (família pool never closes)', async () => {
+    // Even if a stale deadline sits in app_config, the família pool never closes.
+    db.query.mockResolvedValue({ rows: [{ value: '2000-01-01T00:00:00.000Z' }] });
     const res = await request(app).get('/api/config');
     expect(res.status).toBe(200);
     expect(res.body.registrationOpen).toBe(true);
-    expect(res.body.picksDeadline).toBe('2099-01-01T00:00:00.000Z');
+    expect(res.body.picksDeadline).toBeNull();
   });
 });
