@@ -1,21 +1,16 @@
 const router = require('express').Router();
 const db = require('../db/pool');
 const { signToken } = require('../middleware/auth');
-
-// Normalize a US phone to 10 digits (mirrors players route).
-function digitsOf(input) {
-  let d = String(input || '').replace(/\D/g, '');
-  if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
-  return d.length === 10 ? d : null;
-}
+const { normalizePhone } = require('../services/phone');
 
 // Phone login for returning players: no name needed for later phases — the
 // phone finds the existing player and issues a player-scoped token used to
 // attach score picks. (First-time players still register on the Join form.)
 router.post('/api/auth/phone', async (req, res, next) => {
   try {
-    const digits = digitsOf(req.body && req.body.phone);
-    if (!digits) return res.status(400).json({ error: 'A valid US phone number is required' });
+    const ph = normalizePhone(req.body && req.body.phone);
+    const digits = ph && ph.digits;
+    if (!digits) return res.status(400).json({ error: 'A valid phone number is required' });
 
     // Find the returning player by their normalized 10-digit number. Match the
     // canonical `phone_digits` first, but also fall back to the digits of the
