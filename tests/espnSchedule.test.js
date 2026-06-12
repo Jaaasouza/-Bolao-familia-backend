@@ -75,6 +75,23 @@ describe('mapScheduleEvent', () => {
     });
   });
 
+  test('derives the group from the draw when ESPN gives no label', () => {
+    const unlabeled = {
+      id: '704002', date: '2026-06-12T16:00Z',
+      status: { type: { state: 'pre' } },
+      competitions: [{
+        notes: [],
+        competitors: [
+          { homeAway: 'home', team: { displayName: 'Mexico' }, score: '' },
+          { homeAway: 'away', team: { displayName: 'South Africa' }, score: '' },
+        ],
+      }],
+    };
+    expect(mapScheduleEvent(unlabeled)).toMatchObject({
+      stage: 'GROUP_STAGE', group_name: 'GROUP_A', home_team: 'Mexico', away_team: 'South Africa',
+    });
+  });
+
   test('returns null for a non-numeric id or missing competitors', () => {
     expect(mapScheduleEvent({ id: 'abc', competitions: [{ competitors: [] }] })).toBeNull();
     expect(mapScheduleEvent({ id: '5', competitions: [] })).toBeNull();
