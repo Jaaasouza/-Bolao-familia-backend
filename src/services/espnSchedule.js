@@ -11,6 +11,7 @@
 //   - Disable with LIVE_ESPN=0; widen/narrow the window with ESPN_DATES_FROM /
 //     ESPN_DATES_TO (YYYYMMDD) when ESPN's calendar isn't available.
 const { resolveTeamName } = require('./teamAliases');
+const { TEAM_TO_GROUP } = require('../data/groups');
 const { upsertMatches } = require('./syncMatches');
 
 const ESPN_BASE = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
@@ -46,8 +47,10 @@ function stageGroupFrom(text) {
   return null;
 }
 
-// Pull every candidate label off an event and resolve the first that classifies.
-function resolveStageGroup(ev, comp) {
+// Decide a match's stage + group. ESPN doesn't reliably label the group on its
+// scoreboard, so we (1) try any explicit label, then (2) fall back to the fixed
+// 2026 draw: two teams from the SAME group ⇒ a group-stage game in that group.
+function resolveStageGroup(ev, comp, homeTeam, awayTeam) {
   const labels = [];
   for (const n of (comp && comp.notes) || []) {
     if (n && n.headline) labels.push(n.headline);
@@ -59,6 +62,10 @@ function resolveStageGroup(ev, comp) {
     const sg = stageGroupFrom(l);
     if (sg) return sg;
   }
+  // Derive the group from the known draw when both teams share one.
+  const gh = TEAM_TO_GROUP[homeTeam];
+  const ga = TEAM_TO_GROUP[awayTeam];
+  if (gh && gh === ga) return { stage: 'GROUP_STAGE', group_name: `GROUP_${gh}` };
   // Unknown → treat as group stage with no letter (phaseOf(null) is 'group' too).
   return { stage: 'GROUP_STAGE', group_name: null };
 }
@@ -81,12 +88,14 @@ function mapScheduleEvent(ev) {
   );
   const score = (c) => (c.score === undefined || c.score === null || c.score === '' ? null : Number(c.score));
   const status = scheduleStatus((ev.status && ev.status.type) || (comp.status && comp.status.type));
+  const homeTeam = teamName(homeC);
+  const awayTeam = teamName(awayC);
   const homeScore = score(homeC);
   const awayScore = score(awayC);
   const winner = status === 'FINISHED' && homeScore != null && awayScore != null
     ? (homeScore > awayScore ? 'HOME_TEAM' : homeScore < awayScore ? 'AWAY_TEAM' : 'DRAW')
     : null;
-  const { stage, group_name } = resolveStageGroup(ev, comp);
+  const { stage, group_name } = resolveStageGroup(ev, comp, homeTeam, awayTeam);
 
   return {
     id: Number(espnId),
@@ -95,8 +104,8 @@ function mapScheduleEvent(ev) {
     status,
     stage,
     group_name,
-    home_team: teamName(homeC),
-    away_team: teamName(awayC),
+    home_team: homeTeam,
+    away_team: awayTeam,
     home_score: homeScore,
     away_score: awayScore,
     winner,
