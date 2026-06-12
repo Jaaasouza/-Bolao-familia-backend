@@ -3,15 +3,7 @@ const db = require('../db/pool');
 const { requireRole, optionalAuth } = require('../middleware/auth');
 const { emit } = require('../services/eventBus');
 const { isPastDeadline } = require('../services/deadline');
-
-// US phone: must be exactly 10 digits (after stripping a leading 1 / formatting).
-function normalizeUsPhone(input) {
-  let d = String(input || '').replace(/\D/g, '');
-  if (d.length === 11 && d.startsWith('1')) d = d.slice(1);
-  if (d.length !== 10) return null;
-  const pretty = `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}`;
-  return { digits: d, pretty };
-}
+const { normalizePhone } = require('../services/phone');
 
 // Roster read. PUBLIC, but phone numbers are PRIVATE: they're only included for
 // an authenticated admin (for contact/verification). Everyone else gets just the
@@ -44,8 +36,8 @@ router.post('/api/register', async (req, res, next) => {
     const { name, phone, picks } = req.body || {};
     if (!name || !String(name).trim()) return res.status(400).json({ error: 'name required' });
     if (!picks || typeof picks !== 'object') return res.status(400).json({ error: 'picks required' });
-    const ph = normalizeUsPhone(phone);
-    if (!ph) return res.status(400).json({ error: 'A valid US phone number is required' });
+    const ph = normalizePhone(phone);
+    if (!ph) return res.status(400).json({ error: 'A valid phone number is required' });
 
     const cleanName = String(name).trim().slice(0, 80);
 
@@ -93,11 +85,11 @@ router.post('/api/players', requireRole('admin'), async (req, res, next) => {
     const { id, name, picks, phone } = req.body || {};
     if (!id) return res.status(400).json({ error: 'id required' });
     // Optional phone update (admin support tool: re-attach a player to the
-    // number they actually type at the gate). Validated as US 10-digit.
+    // number they actually type at the gate). Validated as a US or BR number.
     let ph = null;
     if (phone !== undefined && phone !== null && String(phone).trim() !== '') {
-      ph = normalizeUsPhone(phone);
-      if (!ph) return res.status(400).json({ error: 'A valid US phone number is required' });
+      ph = normalizePhone(phone);
+      if (!ph) return res.status(400).json({ error: 'A valid phone number is required' });
     }
     await emit(
       'player.save',
