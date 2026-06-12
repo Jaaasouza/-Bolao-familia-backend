@@ -2,36 +2,33 @@ const { fetchAllMatches, fetchStandings, fetchScorers } = require('./footballDat
 const { emit } = require('./eventBus');
 const db = require('../db/pool');
 
-// Pull all matches from football-data.org and upsert them, recording a single
-// audit event for the sync. Runs via the scheduler (every minute) and via the
-// admin POST /api/sync-now endpoint.
-async function syncMatches(actor = 'scheduler') {
-  const matches = await fetchAllMatches();
-  if (!matches.length) return { count: 0, skipped: true };
+// Upsert a list of normalized match rows. Shared by the football-data sync and
+// the ESPN schedule seeder, so both go through the same protective merge:
+//   - admin manual scores (manual_score) are never overwritten;
+//   - a FINISHED row is immutable to the sync (a lagging source must never
+//     un-finish a game or wipe its points);
+//   - a known score is never nulled; status only moves forward;
+//   - espn_id is filled when a source provides it and kept otherwise.
+// `stateKey` records the outcome in sync_state for /api/sync-status.
+async function upsertMatches(matches, actor = 'scheduler', eventName = 'matches.sync', stateKey = 'last_sync_matches') {
+  if (!matches || !matches.length) return { count: 0, skipped: true };
 
   await emit(
-    'matches.sync',
+    eventName,
     { actor, entity: 'matches', data: { count: matches.length } },
     async (client) => {
       for (const m of matches) {
         await client.query(
           `INSERT INTO matches
              (id, utc_date, status, stage, group_name, home_team, away_team,
-              home_score, away_score, winner, last_updated, raw, synced_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, NOW())
+              home_score, away_score, winner, last_updated, raw, espn_id, synced_at)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13, NOW())
            ON CONFLICT (id) DO UPDATE SET
              utc_date     = EXCLUDED.utc_date,
              stage        = EXCLUDED.stage,
              group_name   = EXCLUDED.group_name,
              home_team    = EXCLUDED.home_team,
              away_team    = EXCLUDED.away_team,
-             -- Score/status/winner: preserved when the admin set them manually,
-             -- and football-data may NEVER regress a match. Status only moves
-             -- forward (TIMED → IN_PLAY → FINISHED); a FINISHED row is immutable
-             -- to the sync (its free tier lags in-play and can still report a
-             -- played game as TIMED — that must never un-finish it or wipe the
-             -- points). A known score is never nulled. Admin changes via the
-             -- score endpoint (manual_score) always win.
              status       = CASE
                               WHEN matches.manual_score THEN matches.status
                               WHEN matches.status = 'FINISHED' THEN 'FINISHED'
@@ -52,26 +49,35 @@ async function syncMatches(actor = 'scheduler') {
                               WHEN matches.manual_score THEN matches.winner
                               WHEN matches.status = 'FINISHED' THEN matches.winner
                               ELSE COALESCE(EXCLUDED.winner, matches.winner) END,
+             espn_id      = COALESCE(EXCLUDED.espn_id, matches.espn_id),
              last_updated = EXCLUDED.last_updated,
              raw          = EXCLUDED.raw,
              synced_at    = NOW()`,
           [
             m.id, m.utc_date, m.status, m.stage, m.group_name, m.home_team,
             m.away_team, m.home_score, m.away_score, m.winner, m.last_updated,
-            m.raw,
+            m.raw, m.espn_id || null,
           ]
         );
       }
       await client.query(
         `INSERT INTO sync_state (key, value, updated_at)
-         VALUES ('last_sync_matches', $1, NOW())
+         VALUES ($2, $1, NOW())
          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
-        [JSON.stringify({ at: Date.now(), count: matches.length })]
+        [JSON.stringify({ at: Date.now(), count: matches.length }), stateKey]
       );
     }
   );
 
   return { count: matches.length };
+}
+
+// Pull all matches from football-data.org and upsert them. Runs via the
+// scheduler and the admin POST /api/sync-now endpoint.
+async function syncMatches(actor = 'scheduler') {
+  const matches = await fetchAllMatches();
+  if (!matches.length) return { count: 0, skipped: true };
+  return upsertMatches(matches, actor, 'matches.sync', 'last_sync_matches');
 }
 
 // Secondary sync: official FIFA standings (auto-fills group 1st/2nd) + top
@@ -152,4 +158,4 @@ async function settleStaleMatches() {
   return { settled: rowCount || 0 };
 }
 
-module.exports = { syncMatches, syncSecondary, settleStaleMatches };
+module.exports = { syncMatches, syncSecondary, settleStaleMatches, upsertMatches };
