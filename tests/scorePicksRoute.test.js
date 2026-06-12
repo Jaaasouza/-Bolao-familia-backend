@@ -47,6 +47,18 @@ describe('POST /api/score-picks (família — per-match, rolling)', () => {
     expect(res.body).toMatchObject({ ok: true, saved: 1 });
   });
 
+  test('a pick is final — the insert never overwrites an existing one', async () => {
+    const client = { query: jest.fn().mockResolvedValue({ rows: [], rowCount: 1 }), release: jest.fn() };
+    db.getClient.mockResolvedValue(client);
+    mockMatches([{ id: 1, utc_date: future, status: 'TIMED', stage: 'GROUP_STAGE' }]);
+    const res = await request(app).post('/api/score-picks').set('Authorization', playerBearer)
+      .send({ picks: [{ matchId: 1, home: 3, away: 0 }] });
+    expect(res.status).toBe(200);
+    const sqls = client.query.mock.calls.map((c) => c[0]).join('\n');
+    expect(sqls).toMatch(/ON CONFLICT \(player_id, match_id\) DO NOTHING/);
+    expect(sqls).not.toMatch(/DO UPDATE/);
+  });
+
   test('423 when every submitted match has already started', async () => {
     mockMatches([{ id: 2, utc_date: past, status: 'TIMED', stage: 'GROUP_STAGE' }]);
     const res = await request(app).post('/api/score-picks').set('Authorization', playerBearer)
