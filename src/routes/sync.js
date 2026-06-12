@@ -36,23 +36,23 @@ router.get('/api/sync-status', async (req, res, next) => {
   }
 });
 
-// Force an immediate sync. Seeds fixtures from ESPN (keyless) and, when a
-// football-data key is configured, also pulls from there.
+// Force an immediate fixture sync. football-data is the source when its key is
+// configured (and it purges any leftover ESPN-seeded rows); otherwise we seed
+// the schedule from ESPN's keyless API.
 router.post('/api/sync-now', requireRole('admin'), async (req, res, next) => {
   try {
+    let fd = null;
     let espn = null;
-    if (process.env.LIVE_ESPN !== '0') {
+    if (process.env.FOOTBALL_DATA_API_KEY) {
+      fd = await syncMatches(req.auth.role);
+    } else if (process.env.LIVE_ESPN !== '0') {
       try {
         espn = await syncEspnSchedule(req.auth.role);
       } catch (e) {
         espn = { error: e.message };
       }
     }
-    let fd = null;
-    if (process.env.FOOTBALL_DATA_API_KEY) {
-      fd = await syncMatches(req.auth.role);
-    }
-    res.json({ ok: true, espn, fd, rate: rateInfo() });
+    res.json({ ok: true, fd, espn, rate: rateInfo() });
   } catch (e) {
     if (e.code === 'RATE_LIMITED') {
       return res.status(429).json({ error: e.message, rate: rateInfo() });

@@ -72,12 +72,32 @@ async function upsertMatches(matches, actor = 'scheduler', eventName = 'matches.
   return { count: matches.length };
 }
 
+// When football-data is the fixture source, remove any rows the ESPN seeder
+// created (its PK equals its espn_id) so each game isn't duplicated. football-
+// data rows keep their own id (≠ espn_id) and are never touched; the ESPN live
+// overlay still attaches to them by team name. Best-effort, idempotent.
+async function purgeEspnSeeded() {
+  try {
+    const { rowCount } = await db.query(
+      "DELETE FROM matches WHERE espn_id IS NOT NULL AND CAST(id AS TEXT) = espn_id"
+    );
+    if (rowCount) console.log(`[sync] purged ${rowCount} ESPN-seeded duplicate fixtures`);
+    return { purged: rowCount || 0 };
+  } catch (e) {
+    console.warn('[sync] purge espn-seeded failed:', e.message);
+    return { purged: 0, error: e.message };
+  }
+}
+
 // Pull all matches from football-data.org and upsert them. Runs via the
 // scheduler and the admin POST /api/sync-now endpoint.
 async function syncMatches(actor = 'scheduler') {
   const matches = await fetchAllMatches();
   if (!matches.length) return { count: 0, skipped: true };
-  return upsertMatches(matches, actor, 'matches.sync', 'last_sync_matches');
+  const result = await upsertMatches(matches, actor, 'matches.sync', 'last_sync_matches');
+  // football-data is now the source → drop any leftover ESPN-seeded fixtures.
+  await purgeEspnSeeded();
+  return result;
 }
 
 // Secondary sync: official FIFA standings (auto-fills group 1st/2nd) + top
@@ -158,4 +178,4 @@ async function settleStaleMatches() {
   return { settled: rowCount || 0 };
 }
 
-module.exports = { syncMatches, syncSecondary, settleStaleMatches, upsertMatches };
+module.exports = { syncMatches, syncSecondary, settleStaleMatches, upsertMatches, purgeEspnSeeded };

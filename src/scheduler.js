@@ -150,10 +150,10 @@ function startScheduler() {
       recordSyncResult(e); // surface it on /api/sync-status
     }
 
-    // 1a) ESPN schedule seed — fetch the fixture list from ESPN (keyless) and
-    //     upsert it. This is what populates the tabs in ESPN mode; the overlay
-    //     below then keeps those rows live. Slow cadence (fixtures change rarely).
-    if (!mirror && espnEnabled && Date.now() - lastSchedule >= SCHEDULE_MS) {
+    // 1a) ESPN schedule seed — ONLY when football-data isn't the source. ESPN is
+    //     the keyless fallback that seeds fixtures; when a football-data key is
+    //     present, FD owns the fixtures and ESPN stays the live/lineup overlay.
+    if (!mirror && espnEnabled && !fdEnabled && Date.now() - lastSchedule >= SCHEDULE_MS) {
       lastSchedule = Date.now();
       try {
         const sc = await syncEspnSchedule('scheduler');
