@@ -3,6 +3,7 @@ const { mirrorFromSource } = require('./services/mirrorSync');
 const { overlayEspnLive } = require('./services/espnLive');
 const { overlayLineups } = require('./services/espnLineups');
 const { syncEspnSchedule } = require('./services/espnSchedule');
+const { clearChatOnGameEnd } = require('./services/chatReset');
 const { notifyMatchEvents } = require('./services/push');
 const db = require('./db/pool');
 
@@ -204,6 +205,14 @@ function startScheduler() {
       if (n.events) console.log('[scheduler] push', n);
     } catch (e) {
       console.warn('[scheduler] push failed:', e.message);
+    }
+
+    // 1e) Per-game chat: wipe messages once the live game(s) have ended.
+    try {
+      const c = await clearChatOnGameEnd();
+      if (c.cleared) console.log('[scheduler] chat cleared (game ended)', c);
+    } catch (e) {
+      console.warn('[scheduler] chat reset failed:', e.message);
     }
 
     // 2) Decide cadence from the freshly-synced statuses.
