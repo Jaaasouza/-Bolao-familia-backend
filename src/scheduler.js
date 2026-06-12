@@ -2,6 +2,7 @@ const { syncMatches, syncSecondary, settleStaleMatches } = require('./services/s
 const { mirrorFromSource } = require('./services/mirrorSync');
 const { overlayEspnLive } = require('./services/espnLive');
 const { overlayLineups } = require('./services/espnLineups');
+const { syncEspnSchedule } = require('./services/espnSchedule');
 const { notifyMatchEvents } = require('./services/push');
 const db = require('./db/pool');
 
@@ -100,9 +101,13 @@ async function nextDelay() {
 function startScheduler() {
   const mirrorUrl = process.env.MIRROR_SOURCE_URL;
   const mirror = Boolean(mirrorUrl);
+  const espnEnabled = process.env.LIVE_ESPN !== '0';
+  const fdEnabled = Boolean(process.env.FOOTBALL_DATA_API_KEY);
 
-  if (!mirror && !process.env.FOOTBALL_DATA_API_KEY) {
-    console.log('[scheduler] no MIRROR_SOURCE_URL and no FOOTBALL_DATA_API_KEY — polling disabled');
+  // The família pool runs in "ESPN mode": ESPN seeds the fixtures AND owns the
+  // live beat, so the loop must start even without football-data or a mirror.
+  if (!mirror && !fdEnabled && !espnEnabled) {
+    console.log('[scheduler] no MIRROR_SOURCE_URL, no FOOTBALL_DATA_API_KEY, ESPN disabled — polling disabled');
     return null;
   }
 
@@ -118,6 +123,10 @@ function startScheduler() {
   // for matches in the kickoff window, so off-match days this is just idle.
   const LINEUPS_MS = Number(process.env.LINEUPS_MS || 15_000);
   let lastLineups = 0;
+  // ESPN schedule seed — fetch the fixture list (keyless) on a slow cadence; the
+  // first run happens right after boot (lastSchedule = 0).
+  const SCHEDULE_MS = Number(process.env.ESPN_SCHEDULE_MS || 30 * 60_000);
+  let lastSchedule = 0;
 
   const loop = async () => {
     if (stopped) return;
@@ -129,7 +138,7 @@ function startScheduler() {
         const r = await mirrorFromSource(mirrorUrl);
         console.log('[scheduler] mirror', r);
         recordSyncResult(null);
-      } else if (Date.now() - lastFd >= FD_MIN_MS) {
+      } else if (fdEnabled && Date.now() - lastFd >= FD_MIN_MS) {
         lastFd = Date.now();
         const r = await syncMatches('scheduler');
         console.log('[scheduler] sync', r);
@@ -139,6 +148,19 @@ function startScheduler() {
       if (e.code === 'RATE_LIMITED') console.warn('[scheduler] rate limited, backing off');
       else console.error(`[scheduler] ${mirror ? 'mirror' : 'sync'} failed:`, e.message);
       recordSyncResult(e); // surface it on /api/sync-status
+    }
+
+    // 1a) ESPN schedule seed — fetch the fixture list from ESPN (keyless) and
+    //     upsert it. This is what populates the tabs in ESPN mode; the overlay
+    //     below then keeps those rows live. Slow cadence (fixtures change rarely).
+    if (!mirror && espnEnabled && Date.now() - lastSchedule >= SCHEDULE_MS) {
+      lastSchedule = Date.now();
+      try {
+        const sc = await syncEspnSchedule('scheduler');
+        if (sc.count) console.log('[scheduler] espn-schedule', sc);
+      } catch (e) {
+        console.warn('[scheduler] espn-schedule failed:', e.message);
+      }
     }
 
     // 1b) ESPN live overlay (keyless, real-time). football-data's free tier
@@ -208,7 +230,8 @@ function startScheduler() {
   // First sync shortly after boot (gives the DB pool a moment).
   handle = setTimeout(loop, 2000);
   if (handle.unref) handle.unref();
-  console.log(`[scheduler] adaptive polling started (${mirror ? 'mirror' : 'api'} mode)`);
+  const modeLabel = mirror ? 'mirror' : fdEnabled ? 'api+espn' : 'espn';
+  console.log(`[scheduler] adaptive polling started (${modeLabel} mode)`);
 
   return {
     stop() { stopped = true; if (handle) clearTimeout(handle); },
