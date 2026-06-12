@@ -1,0 +1,62 @@
+name: auto-merge
+
+# When Claude pushes to a claude/** branch, run the checks inline and, if they
+# pass, open a PR (if needed) and squash-merge it into main automatically — so
+# no manual merge is needed. Tests run here directly because PRs opened by
+# GITHUB_TOKEN don't trigger the normal `tests` workflow.
+on:
+  push:
+    branches:
+      - 'claude/**'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  test-and-merge:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_PASSWORD: test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install + test + migration smoke
+        run: |
+          npm ci
+          npm test
+          DATABASE_URL=postgres://postgres:test@localhost:5432/postgres node src/db/migrate.js
+          DATABASE_URL=postgres://postgres:test@localhost:5432/postgres node src/db/migrate.js
+
+      - name: Open PR (if missing) and squash-merge into main
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -e
+          git fetch origin main
+          AHEAD=$(git rev-list --count origin/main..HEAD)
+          if [ "$AHEAD" -eq 0 ]; then
+            echo "No commits ahead of main; nothing to merge."; exit 0
+          fi
+          gh pr create --base main --head "$BRANCH" \
+            --title "auto: $BRANCH" \
+            --body "Automated PR — checks ran inline in the auto-merge workflow." \
+            || echo "PR already exists or could not be created; continuing."
+          gh pr merge "$BRANCH" --squash
