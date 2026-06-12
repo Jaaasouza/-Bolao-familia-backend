@@ -315,6 +315,25 @@ const MIGRATIONS = [
       await client.query('ALTER TABLE matches ADD COLUMN IF NOT EXISTS commentary JSONB');
     },
   },
+  {
+    version: 17,
+    name: 'chat_messages',
+    up: async (client) => {
+      // Pool chat: one row per message. `name` is denormalized (a snapshot of the
+      // player's name at post time) so messages still render if a player is later
+      // renamed or removed.
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS chat_messages (
+          id          BIGSERIAL PRIMARY KEY,
+          player_id   TEXT,
+          name        TEXT,
+          body        TEXT NOT NULL,
+          created_at  TIMESTAMPTZ DEFAULT NOW()
+        )
+      `);
+      await client.query('CREATE INDEX IF NOT EXISTS idx_chat_created ON chat_messages(created_at)');
+    },
+  },
 ];
 
 module.exports = { MIGRATIONS };
