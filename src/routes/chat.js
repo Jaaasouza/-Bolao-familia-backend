@@ -3,54 +3,62 @@ const db = require('../db/pool');
 const { requireRole } = require('../middleware/auth');
 
 const MAX_LEN = 500;
-const MIN_INTERVAL_MS = 1000; // light anti-spam: one message per second per player
+const MIN_INTERVAL_MS = 1000; // light anti-spam: one message per second per player/channel
 
-// Best-effort in-memory throttle (per process). Not a security control — just
-// stops accidental double-sends / rapid spam.
+// Two independent chat channels:
+//   - 'live'    → in-game banter; wiped when the game ends (services/chatReset).
+//   - 'ranking' → pool chat on the leaderboard; persists.
+const CHANNELS = new Set(['live', 'ranking']);
+function channelOf(value) {
+  return CHANNELS.has(value) ? value : 'live';
+}
+
+// Best-effort in-memory throttle (per process). Not a security control.
 const lastPostAt = new Map();
 
-// GET /api/chat?since=<ISO>&limit=N — pool messages, oldest → newest.
-//   - `since` returns only messages newer than that timestamp (incremental poll).
-//   - otherwise the most recent `limit` messages (default 100, max 200).
+// GET /api/chat?channel=live|ranking&since=<ISO>&limit=N — oldest → newest.
 router.get('/api/chat', requireRole('player', 'admin'), async (req, res, next) => {
   try {
+    const channel = channelOf(req.query.channel);
     const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 200);
     const since = req.query.since ? new Date(req.query.since) : null;
     let rows;
     if (since && !Number.isNaN(since.getTime())) {
       ({ rows } = await db.query(
         `SELECT id, player_id, name, body, created_at FROM chat_messages
-          WHERE created_at > $1 ORDER BY created_at ASC LIMIT $2`,
-        [since.toISOString(), limit]
+          WHERE channel = $1 AND created_at > $2 ORDER BY created_at ASC LIMIT $3`,
+        [channel, since.toISOString(), limit]
       ));
     } else {
       ({ rows } = await db.query(
         `SELECT id, player_id, name, body, created_at FROM (
            SELECT id, player_id, name, body, created_at FROM chat_messages
-           ORDER BY created_at DESC LIMIT $1
+           WHERE channel = $1 ORDER BY created_at DESC LIMIT $2
          ) t ORDER BY created_at ASC`,
-        [limit]
+        [channel, limit]
       ));
     }
-    res.json({ messages: rows, serverTime: Date.now() });
+    res.json({ messages: rows, channel, serverTime: Date.now() });
   } catch (e) {
     next(e);
   }
 });
 
-// POST /api/chat { body } — post a message as the logged-in player.
+// POST /api/chat { body, channel } — post a message as the logged-in player.
 router.post('/api/chat', requireRole('player', 'admin'), async (req, res, next) => {
   try {
     const pid = req.auth.pid || null;
+    const channel = channelOf(req.body && req.body.channel);
     const body = String((req.body && req.body.body) || '').trim();
     if (!body) return res.status(400).json({ error: 'Message cannot be empty.' });
     if (body.length > MAX_LEN) return res.status(400).json({ error: `Message too long (max ${MAX_LEN}).` });
 
     const now = Date.now();
-    if (pid && now - (lastPostAt.get(pid) || 0) < MIN_INTERVAL_MS) {
+    const throttleKey = `${pid}:${channel}`;
+    if (pid && now - (lastPostAt.get(throttleKey) || 0) < MIN_INTERVAL_MS) {
       return res.status(429).json({ error: 'Slow down a moment.' });
     }
-    if (pid) lastPostAt.set(pid, now);
+    if (pid) lastPostAt.set(throttleKey, now);
 
     // Snapshot the player's current name so the message renders independently.
     let name = null;
@@ -60,9 +68,9 @@ router.post('/api/chat', requireRole('player', 'admin'), async (req, res, next) 
     }
 
     const { rows } = await db.query(
-      `INSERT INTO chat_messages (player_id, name, body) VALUES ($1, $2, $3)
+      `INSERT INTO chat_messages (player_id, name, body, channel) VALUES ($1, $2, $3, $4)
        RETURNING id, player_id, name, body, created_at`,
-      [pid, name, body]
+      [pid, name, body, channel]
     );
     res.json({ ok: true, message: rows[0] });
   } catch (e) {

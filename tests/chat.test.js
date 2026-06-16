@@ -51,6 +51,46 @@ describe('POST /api/chat', () => {
     expect(res.status).toBe(200);
     expect(res.body.message).toMatchObject({ name: 'João', body: 'olá pessoal' });
   });
+
+  test('stores the chosen channel (ranking)', async () => {
+    let insertParams = null;
+    db.query.mockImplementation((sql, params) => {
+      if (/FROM players WHERE id/.test(sql)) return Promise.resolve({ rows: [{ name: 'Ana' }] });
+      if (/INSERT INTO chat_messages/.test(sql)) {
+        insertParams = params;
+        return Promise.resolve({ rows: [{ id: 9, player_id: 'p_r', name: 'Ana', body: 'oi rank', created_at: '2026-06-12T02:00:00Z' }] });
+      }
+      return Promise.resolve({ rows: [] });
+    });
+    const res = await request(app).post('/api/chat').set('Authorization', playerBearer('p_r'))
+      .send({ body: 'oi rank', channel: 'ranking' });
+    expect(res.status).toBe(200);
+    expect(insertParams[insertParams.length - 1]).toBe('ranking');
+  });
+
+  test('an unknown channel falls back to live', async () => {
+    let insertParams = null;
+    db.query.mockImplementation((sql, params) => {
+      if (/FROM players WHERE id/.test(sql)) return Promise.resolve({ rows: [{ name: 'Bob' }] });
+      if (/INSERT INTO chat_messages/.test(sql)) { insertParams = params; return Promise.resolve({ rows: [{ id: 10 }] }); }
+      return Promise.resolve({ rows: [] });
+    });
+    const res = await request(app).post('/api/chat').set('Authorization', playerBearer('p_b'))
+      .send({ body: 'hey', channel: 'bogus' });
+    expect(res.status).toBe(200);
+    expect(insertParams[insertParams.length - 1]).toBe('live');
+  });
+});
+
+describe('GET /api/chat channel filter', () => {
+  test('filters by channel param', async () => {
+    let selParams = null;
+    db.query.mockImplementation((sql, params) => { selParams = params; return Promise.resolve({ rows: [] }); });
+    const res = await request(app).get('/api/chat?channel=ranking').set('Authorization', playerBearer());
+    expect(res.status).toBe(200);
+    expect(res.body.channel).toBe('ranking');
+    expect(selParams[0]).toBe('ranking');
+  });
 });
 
 describe('DELETE /api/chat/:id', () => {

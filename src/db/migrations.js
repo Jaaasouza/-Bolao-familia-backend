@@ -334,6 +334,16 @@ const MIGRATIONS = [
       await client.query('CREATE INDEX IF NOT EXISTS idx_chat_created ON chat_messages(created_at)');
     },
   },
+  {
+    version: 18,
+    name: 'chat_channel',
+    up: async (client) => {
+      // Two chat channels: 'live' (in-game, wiped when the game ends) and
+      // 'ranking' (leaderboard chat, persists). Existing rows default to 'live'.
+      await client.query("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS channel TEXT NOT NULL DEFAULT 'live'");
+      await client.query('CREATE INDEX IF NOT EXISTS idx_chat_channel_created ON chat_messages(channel, created_at)');
+    },
+  },
 ];
 
 module.exports = { MIGRATIONS };
