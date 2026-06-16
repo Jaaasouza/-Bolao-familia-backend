@@ -29,7 +29,7 @@ async function clearChatOnGameEnd() {
     return { live: true };
   }
   if (hadLive) {
-    const res = await db.query('DELETE FROM chat_messages');
+    const res = await db.query("DELETE FROM chat_messages WHERE channel = 'live'");
     await setFlag(false);
     return { cleared: res.rowCount || 0 };
   }
