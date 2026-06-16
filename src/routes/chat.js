@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const db = require('../db/pool');
 const { requireRole } = require('../middleware/auth');
+const { sendChatMention } = require('../services/push');
 
 const MAX_LEN = 500;
 const MIN_INTERVAL_MS = 1000; // light anti-spam: one message per second per player/channel
@@ -72,6 +73,16 @@ router.post('/api/chat', requireRole('player', 'admin'), async (req, res, next) 
        RETURNING id, player_id, name, body, created_at`,
       [pid, name, body, channel]
     );
+
+    // Notify @mentioned players (best-effort; never blocks the post). Dedupe,
+    // skip the author, cap to avoid abuse.
+    const mentions = Array.isArray(req.body && req.body.mentions)
+      ? [...new Set(req.body.mentions.map(String))].filter((id) => id && id !== String(pid)).slice(0, 20)
+      : [];
+    for (const target of mentions) {
+      try { await sendChatMention(target, name, body); } catch { /* ignore push errors */ }
+    }
+
     res.json({ ok: true, message: rows[0] });
   } catch (e) {
     next(e);
