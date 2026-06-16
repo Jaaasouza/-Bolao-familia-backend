@@ -96,6 +96,34 @@ async function sendPlayerEvent(playerId, event, facts) {
   return sent;
 }
 
+// Notify a player they were @mentioned in chat. Best-effort, like sendPlayerEvent.
+async function sendChatMention(playerId, fromName, text) {
+  if (!enabled || !playerId) return 0;
+  const { rows } = await db.query(
+    'SELECT endpoint, p256dh, auth, lang FROM push_subscriptions WHERE player_id = $1',
+    [playerId]
+  );
+  let sent = 0;
+  for (const s of rows) {
+    const sub = { endpoint: s.endpoint, keys: { p256dh: s.p256dh, auth: s.auth } };
+    const title = (s.lang === 'en')
+      ? `💬 ${fromName || 'Someone'} mentioned you`
+      : `💬 ${fromName || 'Alguém'} mencionou você`;
+    const payload = JSON.stringify({ title, body: String(text || '').slice(0, 140), url: '/' });
+    try {
+      await webpush.sendNotification(sub, payload);
+      sent += 1;
+    } catch (e) {
+      if (e.statusCode === 404 || e.statusCode === 410) {
+        await db.query('DELETE FROM push_subscriptions WHERE endpoint = $1', [s.endpoint]).catch(() => {});
+      } else {
+        console.warn('[push] mention send failed:', e.statusCode || e.message);
+      }
+    }
+  }
+  return sent;
+}
+
 // Confirmed points per player, from FINISHED matches only (the "Total" line).
 async function confirmedTotals() {
   const { rows: finished } = await db.query(
@@ -216,5 +244,5 @@ async function notifyMatchEvents() {
 module.exports = {
   isEnabled, publicKey,
   matchEventMessage, matchResultMessage,
-  sendPlayerEvent, notifyMatchEvents,
+  sendPlayerEvent, notifyMatchEvents, sendChatMention,
 };

@@ -1,9 +1,11 @@
 jest.mock('../src/db/pool');
+jest.mock('../src/services/push', () => ({ sendChatMention: jest.fn().mockResolvedValue(1) }));
 
 process.env.JWT_SECRET = 'test-secret';
 
 const request = require('supertest');
 const db = require('../src/db/pool');
+const { sendChatMention } = require('../src/services/push');
 const { signToken } = require('../src/middleware/auth');
 const { buildApp } = require('../src/app');
 
@@ -79,6 +81,22 @@ describe('POST /api/chat', () => {
       .send({ body: 'hey', channel: 'bogus' });
     expect(res.status).toBe(200);
     expect(insertParams[insertParams.length - 1]).toBe('live');
+  });
+});
+
+describe('POST /api/chat mentions', () => {
+  test('notifies mentioned players (excluding the author)', async () => {
+    db.query.mockImplementation((sql) => {
+      if (/FROM players WHERE id/.test(sql)) return Promise.resolve({ rows: [{ name: 'Ana' }] });
+      if (/INSERT INTO chat_messages/.test(sql)) return Promise.resolve({ rows: [{ id: 1, body: 'oi @Bob' }] });
+      return Promise.resolve({ rows: [] });
+    });
+    const res = await request(app).post('/api/chat').set('Authorization', playerBearer('p_ana'))
+      .send({ body: 'oi @Bob', mentions: ['p_bob', 'p_ana', 'p_bob'] });
+    expect(res.status).toBe(200);
+    // p_ana (author) excluded, p_bob deduped → one call
+    expect(sendChatMention).toHaveBeenCalledTimes(1);
+    expect(sendChatMention).toHaveBeenCalledWith('p_bob', 'Ana', 'oi @Bob');
   });
 });
 
