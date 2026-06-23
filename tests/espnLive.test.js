@@ -116,6 +116,31 @@ describe('overlayEspnLive', () => {
     expect(db.query.mock.calls[1][1].slice(0, 6)).toEqual([537327, 'FINISHED', 2, 1, 'HOME_TEAM', null]);
   });
 
+  test('recovers a wrongly-finished game when ESPN still reports it live', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ events: [espnEvent({ home: 'Mexico', away: 'South Africa', hs: 1, as: 1 })] }),
+    });
+    db.query
+      .mockResolvedValueOnce({ rows: [{ ...liveRow, status: 'FINISHED', home_score: 1, away_score: 1 }] })
+      .mockResolvedValue({ rows: [] });
+    const r = await overlayEspnLive();
+    expect(r.updated).toBe(1);
+    expect(db.query.mock.calls[1][0]).toMatch(/UPDATE matches/);
+    expect(db.query.mock.calls[1][1][1]).toBe('IN_PLAY'); // brought back from FINISHED
+  });
+
+  test('leaves a genuinely finished game alone (ESPN also FINISHED)', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ events: [espnEvent({ home: 'Mexico', away: 'South Africa', hs: 2, as: 1, state: 'post', name: 'STATUS_FULL_TIME' })] }),
+    });
+    db.query.mockResolvedValueOnce({ rows: [{ ...liveRow, status: 'FINISHED', home_score: 2, away_score: 1 }] });
+    const r = await overlayEspnLive();
+    expect(r.updated).toBe(0);
+    expect(db.query).toHaveBeenCalledTimes(1); // SELECT only — no UPDATE
+  });
+
   test('captures the ESPN id for a not-yet-started game (for lineups)', async () => {
     global.fetch = jest.fn().mockResolvedValue({
       ok: true,

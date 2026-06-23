@@ -157,10 +157,13 @@ async function syncSecondary(actor = 'scheduler') {
   return { standings: groups.length, scorers: scorers ? scorers.length : 0 };
 }
 
-// Self-heal: a match that has a score AND kicked off more than 3h ago is over —
-// force it FINISHED so it always counts on the leaderboard. This catches the
-// case where the live source (ESPN) stopped reporting a game after full-time
-// while football-data still lags at TIMED. Never touches admin-set matches.
+// Self-heal: settle a match that's clearly over so it always counts on the
+// leaderboard. Two cases, so a LIVE match in a long stoppage/half-time break is
+// never finished prematurely:
+//   - stuck at TIMED/SCHEDULED (football-data lag) with a score, 3h+ after KO;
+//   - still IN_PLAY/PAUSED only once 4h30 have passed (no match runs that long,
+//     even with extra time + pens + a long break) → ESPN must have abandoned it.
+// Never touches admin-set matches.
 async function settleStaleMatches() {
   const { rowCount } = await db.query(
     `UPDATE matches
@@ -173,7 +176,10 @@ async function settleStaleMatches() {
         AND status <> 'FINISHED'
         AND home_score IS NOT NULL AND away_score IS NOT NULL
         AND utc_date IS NOT NULL
-        AND utc_date < NOW() - INTERVAL '3 hours'`
+        AND (
+          (status IN ('IN_PLAY','PAUSED','LIVE') AND utc_date < NOW() - INTERVAL '4 hours 30 minutes')
+          OR (status NOT IN ('IN_PLAY','PAUSED','LIVE') AND utc_date < NOW() - INTERVAL '3 hours')
+        )`
   );
   return { settled: rowCount || 0 };
 }
