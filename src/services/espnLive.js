@@ -157,8 +157,11 @@ async function overlayEspnLive() {
     }
     // Pre-game (no live status yet) → nothing else to update.
     if (!ev.status) continue;
-    // A FINISHED row is final (FD or a previous overlay already settled it).
-    if (m.status === 'FINISHED' && ev.status !== 'FINISHED') continue;
+    // A FINISHED row is normally final — but if ESPN is actively reporting the
+    // game as LIVE again (e.g. it was force-settled during a long stoppage),
+    // trust the live source and bring it back.
+    const espnLive = ev.status === 'IN_PLAY' || ev.status === 'PAUSED';
+    if (m.status === 'FINISHED' && !espnLive) continue;
 
     const changed = m.status !== ev.status
       || (m.home_score ?? null) !== (ev.homeScore ?? null)
