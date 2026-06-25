@@ -30,7 +30,21 @@ function scorePick(pred, actual) {
   return 0;
 }
 
-const COUNTABLE = new Set(['FINISHED', 'IN_PLAY', 'PAUSED']);
+// Statuses where a leftover score must NOT be scored (void games).
+const VOID_STATUS = new Set(['CANCELLED', 'CANCELED', 'POSTPONED', 'SUSPENDED', 'ABANDONED']);
+// Back-compat: the explicit "live/finished" set (still exported).
+const COUNTABLE = new Set(['FINISHED', 'IN_PLAY', 'PAUSED', 'LIVE']);
+
+// A match counts once it has actually been played — i.e. it HAS a scoreline —
+// and isn't a void game. We key off the score, not an exact status, so a game
+// whose status lags (e.g. one of two simultaneous games stuck at TIMED while the
+// other is IN_PLAY, or a feed reporting a final score before flipping to
+// FINISHED) still counts. Pre-match games have null scores → not counted.
+function isCountable(m) {
+  if (!m) return false;
+  if (VOID_STATUS.has(m.status)) return false;
+  return m.home_score != null && m.away_score != null;
+}
 
 // Total for a player across all their score picks.
 // picks: [{ match_id, pred_home, pred_away }]
@@ -41,7 +55,7 @@ function totalForPlayer(picks, matchesById) {
   let resultOnly = 0;
   for (const p of picks || []) {
     const m = matchesById[p.match_id];
-    if (!m || !COUNTABLE.has(m.status)) continue;
+    if (!isCountable(m)) continue;
     const pts = scorePick(
       { home: p.pred_home, away: p.pred_away },
       { home: m.home_score, away: m.away_score }
@@ -53,4 +67,4 @@ function totalForPlayer(picks, matchesById) {
   return { total, exact, resultOnly };
 }
 
-module.exports = { scorePick, totalForPlayer, outcome, EXACT, RESULT, COUNTABLE };
+module.exports = { scorePick, totalForPlayer, outcome, isCountable, EXACT, RESULT, COUNTABLE };
