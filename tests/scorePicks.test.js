@@ -1,4 +1,4 @@
-const { scorePick, totalForPlayer, outcome } = require('../src/services/scorePicks');
+const { scorePick, totalForPlayer, outcome, isCountable } = require('../src/services/scorePicks');
 
 describe('scorePick (exact 3 / result 1)', () => {
   test('exact score → 3', () => {
@@ -44,5 +44,31 @@ describe('totalForPlayer', () => {
     ];
     const s = totalForPlayer(picks, matchesById);
     expect(s).toEqual({ total: 4, exact: 1, resultOnly: 1 });
+  });
+
+  test('counts a played game even if its status lags (score present)', () => {
+    // Two simultaneous games: one is IN_PLAY, the other still shows TIMED/LIVE
+    // but already has a score → BOTH must count.
+    const mbid = {
+      10: { home_score: 1, away_score: 0, status: 'IN_PLAY' },
+      11: { home_score: 2, away_score: 2, status: 'TIMED' }, // status lagging
+      12: { home_score: 0, away_score: 1, status: 'LIVE' },
+    };
+    const picks = [
+      { match_id: 10, pred_home: 1, pred_away: 0 }, // exact → 3
+      { match_id: 11, pred_home: 3, pred_away: 3 }, // draw result → 1
+      { match_id: 12, pred_home: 0, pred_away: 1 }, // exact → 3
+    ];
+    expect(totalForPlayer(picks, mbid)).toEqual({ total: 7, exact: 2, resultOnly: 1 });
+  });
+});
+
+describe('isCountable', () => {
+  test('counts any game with a scoreline, ignores void/unplayed', () => {
+    expect(isCountable({ home_score: 1, away_score: 0, status: 'IN_PLAY' })).toBe(true);
+    expect(isCountable({ home_score: 2, away_score: 2, status: 'TIMED' })).toBe(true); // status lagging
+    expect(isCountable({ home_score: null, away_score: null, status: 'TIMED' })).toBe(false); // not played
+    expect(isCountable({ home_score: 0, away_score: 0, status: 'CANCELLED' })).toBe(false); // void
+    expect(isCountable(null)).toBe(false);
   });
 });
