@@ -19,8 +19,13 @@ async function fetchJson(url) {
 }
 
 // Copy matches (+ decided standings) from the source backend. Upserts use the
-// same shape as syncMatches, so everything downstream behaves identically.
-// Note: the per-pool `upset` flag is intentionally NOT mirrored.
+// same protective merge as syncMatches:
+//   - admin manual scores (manual_score) are never overwritten;
+//   - admin manual teams (manual_teams) are never overwritten;
+//   - a FINISHED row's score is immutable to the mirror;
+//   - a known team name is never nulled (defence against the source briefly
+//     losing a team assignment on a knockout fixture).
+// The per-pool `upset` flag is intentionally NOT mirrored.
 async function mirrorFromSource(sourceUrl) {
   const base = String(sourceUrl).replace(/\/+$/, '');
   const [matchesJson, standingsJson] = await Promise.all([
@@ -46,14 +51,34 @@ async function mirrorFromSource(sourceUrl) {
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, NOW())
            ON CONFLICT (id) DO UPDATE SET
              utc_date     = EXCLUDED.utc_date,
-             status       = EXCLUDED.status,
+             status       = CASE
+                              WHEN matches.manual_score THEN matches.status
+                              WHEN matches.status = 'FINISHED' THEN 'FINISHED'
+                              ELSE EXCLUDED.status END,
              stage        = EXCLUDED.stage,
              group_name   = EXCLUDED.group_name,
-             home_team    = EXCLUDED.home_team,
-             away_team    = EXCLUDED.away_team,
-             home_score   = EXCLUDED.home_score,
-             away_score   = EXCLUDED.away_score,
-             winner       = EXCLUDED.winner,
+             home_team    = CASE
+                              WHEN matches.manual_teams THEN matches.home_team
+                              WHEN EXCLUDED.home_team IS NULL THEN matches.home_team
+                              ELSE EXCLUDED.home_team END,
+             away_team    = CASE
+                              WHEN matches.manual_teams THEN matches.away_team
+                              WHEN EXCLUDED.away_team IS NULL THEN matches.away_team
+                              ELSE EXCLUDED.away_team END,
+             home_score   = CASE
+                              WHEN matches.manual_score THEN matches.home_score
+                              WHEN matches.status = 'FINISHED' THEN matches.home_score
+                              WHEN EXCLUDED.home_score IS NULL THEN matches.home_score
+                              ELSE EXCLUDED.home_score END,
+             away_score   = CASE
+                              WHEN matches.manual_score THEN matches.away_score
+                              WHEN matches.status = 'FINISHED' THEN matches.away_score
+                              WHEN EXCLUDED.away_score IS NULL THEN matches.away_score
+                              ELSE EXCLUDED.away_score END,
+             winner       = CASE
+                              WHEN matches.manual_score THEN matches.winner
+                              WHEN matches.status = 'FINISHED' THEN matches.winner
+                              ELSE COALESCE(EXCLUDED.winner, matches.winner) END,
              last_updated = EXCLUDED.last_updated,
              raw          = EXCLUDED.raw,
              synced_at    = NOW()`,
