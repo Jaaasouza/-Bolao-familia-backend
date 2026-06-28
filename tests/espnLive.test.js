@@ -163,4 +163,52 @@ describe('overlayEspnLive', () => {
     expect(r.updated).toBe(0);
     expect(r.error).toBe('boom');
   });
+
+  test('logs unmatched ESPN fixtures to sync_state (alias gap diagnostic)', async () => {
+    // ESPN reports a fixture whose team names normalize to something the DB
+    // doesn't have — typical when teamAliases.js is missing a country.
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        events: [
+          espnEvent({ home: 'Mexico', away: 'South Africa', hs: 1, as: 0 }),
+          espnEvent({ home: 'Atlantis', away: 'Wakanda', hs: 2, as: 2 }), // no DB row matches
+        ],
+      }),
+    });
+    // Candidate matches: only Mexico vs South Africa is in the DB.
+    db.query
+      .mockResolvedValueOnce({ rows: [liveRow] }) // SELECT candidates
+      .mockResolvedValue({ rows: [] });           // UPDATE + sync_state insert
+
+    const r = await overlayEspnLive();
+    expect(r.matched).toBe(1);
+    expect(r.unmatched).toBe(1);
+
+    const calls = db.query.mock.calls.map((c) => c[0]);
+    const insert = calls.find((sql) => /last_unmatched_espn/.test(sql));
+    expect(insert).toBeTruthy();
+
+    // The payload should name the orphan fixture.
+    const insertCall = db.query.mock.calls.find((c) => /last_unmatched_espn/.test(c[0]));
+    const value = JSON.parse(insertCall[1][0]);
+    expect(value.count).toBe(1);
+    expect(value.fixtures[0].home).toBe('Atlantis');
+    expect(value.fixtures[0].away).toBe('Wakanda');
+  });
+
+  test('does not write last_unmatched_espn when every fixture pairs', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({ events: [espnEvent({ home: 'Mexico', away: 'South Africa', hs: 1, as: 0 })] }),
+    });
+    db.query
+      .mockResolvedValueOnce({ rows: [liveRow] })
+      .mockResolvedValue({ rows: [] });
+
+    await overlayEspnLive();
+
+    const calls = db.query.mock.calls.map((c) => c[0]);
+    expect(calls.some((sql) => /last_unmatched_espn/.test(sql))).toBe(false);
+  });
 });

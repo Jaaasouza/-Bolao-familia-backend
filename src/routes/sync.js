@@ -11,7 +11,7 @@ const { rateInfo } = require('../services/footballData');
 router.get('/api/sync-status', async (req, res, next) => {
   try {
     const { rows } = await db.query(
-      "SELECT key, value, updated_at FROM sync_state WHERE key IN ('last_sync_matches','last_sync_error','last_espn','last_espn_schedule','standings_full','scorers')"
+      "SELECT key, value, updated_at FROM sync_state WHERE key IN ('last_sync_matches','last_sync_error','last_espn','last_espn_schedule','last_unmatched_espn','standings_full','scorers')"
     );
     const map = {};
     for (const r of rows) map[r.key] = { value: r.value, updatedAt: r.updated_at };
@@ -29,6 +29,10 @@ router.get('/api/sync-status', async (req, res, next) => {
       lastSyncError: map.last_sync_error || null,
       lastEspn: map.last_espn || null,
       lastEspnSchedule: map.last_espn_schedule || null,
+      // When non-null, ESPN reported fixtures we couldn't pair to our DB rows
+      // by team name — usually means a country is missing from teamAliases.js.
+      // The fixture's score won't be written until the alias is added.
+      lastUnmatchedEspn: map.last_unmatched_espn || null,
       serverTime: Date.now(),
     });
   } catch (e) {
