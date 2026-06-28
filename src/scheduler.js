@@ -5,6 +5,7 @@ const { overlayLineups } = require('./services/espnLineups');
 const { syncEspnSchedule } = require('./services/espnSchedule');
 const { clearChatOnGameEnd } = require('./services/chatReset');
 const { notifyMatchEvents } = require('./services/push');
+const { backfillBracket } = require('./services/bracketBackfill');
 const db = require('./db/pool');
 
 // Standings + scorers change slowly and cost 2 extra API calls, so only refresh
@@ -197,6 +198,19 @@ function startScheduler() {
       if (s.settled) console.log('[scheduler] settle', s);
     } catch (e) {
       console.warn('[scheduler] settle failed:', e.message);
+    }
+
+    // 1c2) Bracket backfill: when football-data lags propagating knockout
+    //      teams (it often takes hours/days after each round), copy them from
+    //      ESPN's scoreboard as a best-effort fill so players can keep picking.
+    //      manual_teams pins are honoured. Disabled by ESPN_BRACKET_BACKFILL=0.
+    if (!mirror) {
+      try {
+        const b = await backfillBracket();
+        if (b.filled) console.log('[scheduler] bracket-backfill', b);
+      } catch (e) {
+        console.warn('[scheduler] bracket-backfill failed:', e.message);
+      }
     }
 
     // 1d) After scores update, fire match-beat alerts (kickoff/goal/half/full).
