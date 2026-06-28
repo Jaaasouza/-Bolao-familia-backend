@@ -94,24 +94,43 @@ remain in force.
 
 ---
 
-## ⚠️ This repo today (reality — differs from the reference stack)
+## Current state of this repo
 
-The tech-stack and backend notes above describe the reference setup
-(usam-mes-backend). **This Copa backend repo does not match it yet:**
+This backend matches the reference stack. Highlights:
 
-- This repo is **empty** — only `README.md` (1 line) and this file. No
-  `src/index.js`, no Express, no Postgres, no migrations, no `railway.json`,
-  no event bus, no `requireRole`, no `/health`, no CI, no tests.
-- The backend that actually serves the app is a set of **Vercel serverless
-  functions** living in the **frontend repo** (`usam-fifa-world-cup`):
-  `state.js`, `matches.js`, `players.js`, `phases.js`, `standings.js`,
-  `sync-now.js`, `sync-matches.js`. Storage is **Vercel KV**; the data source is
-  **football-data.org** (free tier, 10 req/min; cron uses 1/min).
-- Auth on those endpoints is `x-admin-token` == `process.env.ADMIN_TOKEN`
-  (the reference `requireRole(...)` / JWT model is not present).
-- Those functions import `lib/kv.js` and `lib/football-data.js` that **do not
-  exist anywhere** — the backend is incomplete.
+- **Express + Postgres**, deployed on Railway (`railway.json`).
+- **Append-only migrations** in `src/db/migrations.js` (v1+). Never edit a
+  merged migration — add a new version.
+- **Central event bus** (`src/services/eventBus.js`) wraps every mutation in a
+  transaction and writes to `audit_log` (wipe-immune, migration v2). Never
+  bypass it for state changes.
+- **Auth**: bearer-token JWT via `src/middleware/auth.js`. `requireRole('admin')`
+  and `requireRole('player', 'admin')` gate routes. Two login endpoints:
+  `POST /api/auth/login` (admin PIN) and `POST /api/auth/phone` (player phone).
+- **Score picks are insert-only**: `INSERT … ON CONFLICT (player_id, match_id)
+  DO NOTHING`. A submitted prediction is final and immutable.
+- **Match sync**: dual-source by design. `football-data.org` is the truth for
+  fixtures and final scores; `ESPN` (`espnLive.js`) overlays live in-game
+  updates because the FD free tier has no live push.
+- **Scheduler** (`src/scheduler.js`) is adaptive: 5s during live matches, 30min
+  when idle. ESPN owns the live beat; FD is polled at most every `FD_MIN_MS`.
+- **CI**: GitHub Actions runs `npm test` on Node 18 + 20 per PR.
 
-Before feature work, expect Claude to flag/propose one of: (a) consolidate the
-Vercel backend into this repo and complete the missing `lib/`, or (b) rebuild on
-the reference Express + Postgres + Railway stack. Pick a direction first.
+## Scoring model (the heart of the game)
+
+Per match (`services/scorePicks.js`):
+
+- **EXACT score** (home AND away correct) → **+3**
+- **RESULT only** (correct winner, or draw when both predicted and actual are
+  draws) → **+1**
+- Otherwise → **0**
+
+Plus a per-group bonus, only once **all** matches in a group are FINISHED
+(`services/groupBonus.js`):
+
+- Predicted 1st AND 2nd correct, right order → **+2**
+- Predicted 1st AND 2nd correct, wrong order → **+1**
+- Otherwise → **0**
+
+The leaderboard is server-computed (`GET /api/score-leaderboard`) so every
+client agrees on the same numbers.

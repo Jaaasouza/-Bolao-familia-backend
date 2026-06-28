@@ -145,9 +145,18 @@ async function overlayEspnLive() {
 
   let updated = 0;
   let matched = 0;
+  const unmatched = [];
   for (const ev of events) {
     const m = byPair.get(`${normalize(ev.home)}|${normalize(ev.away)}`);
-    if (!m || m.manual_score) continue;
+    if (!m) {
+      // ESPN reported a fixture we couldn't pair to any DB row by team name.
+      // Most common cause: the team name from ESPN isn't in teamAliases.js, so
+      // its score never reaches the DB and the match never counts on the
+      // leaderboard. Surface it so we can fix the alias before the next match.
+      unmatched.push({ home: ev.home, away: ev.away, espnId: ev.espnId, status: ev.status });
+      continue;
+    }
+    if (m.manual_score) continue;
     matched += 1;
 
     // Always remember the ESPN id (even for not-yet-started games) so lineups
@@ -188,8 +197,24 @@ async function overlayEspnLive() {
     );
     if (changed) updated += 1;
   }
+
+  // Persist the latest unmatched list (best-effort; never throws). /api/sync-status
+  // surfaces this so it's obvious WHICH ESPN team name is missing from teamAliases.
+  if (unmatched.length) {
+    console.warn('[espn] unmatched fixtures (alias gap):', unmatched);
+    try {
+      await db.query(
+        `INSERT INTO sync_state (key, value, updated_at)
+         VALUES ('last_unmatched_espn', $1, NOW())
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+        [JSON.stringify({ at: Date.now(), count: unmatched.length, fixtures: unmatched })]
+      );
+    } catch (e) {
+      console.warn('[espn] persist unmatched failed:', e.message);
+    }
+  }
   // matched = how many of ESPN's games we paired to our fixtures (coverage check).
-  return { updated, events: events.length, matched };
+  return { updated, events: events.length, matched, unmatched: unmatched.length };
 }
 
 module.exports = { overlayEspnLive, mapEspnEvent, mapStatus, parseMinute, classifyEvent, fetchScoreboard };

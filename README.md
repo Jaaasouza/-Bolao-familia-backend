@@ -35,16 +35,49 @@ You need a local Postgres reachable at `DATABASE_URL` (the default points at
 ### Public (read-only)
 - `GET /health` — liveness probe
 - `GET /api/state` — matches + phases + standings + last sync
-- `GET /api/matches`, `GET /api/players`, `GET /api/phases`, `GET /api/standings`
+- `GET /api/matches`, `GET /api/players`, `GET /api/groups`,
+  `GET /api/phases`, `GET /api/standings`, `GET /api/config`
+- `GET /api/score-picks` — all picks grouped by player
+- `GET /api/score-leaderboard` — server-computed ranking
+- `GET /api/sync-status` — last sync result + rate-limit info
+- `GET /api/push/key` — VAPID public key for web-push
 
 ### Auth
-- `POST /api/auth/login` — `{ password }` → `{ token, role }` (admin JWT)
+- `POST /api/auth/login` — `{ password }` → `{ token, role: "admin" }`
+- `POST /api/auth/phone` — `{ phone }` → `{ token, player }`
 
-### Admin (`Authorization: Bearer <token>`)
+### Player (`Authorization: Bearer <playerToken>`)
+- `GET /api/my-score-picks` — my picks + award bets
+- `POST /api/score-picks` — submit picks `{ picks:[{matchId,home,away}], awards }`
+- `POST /api/register` — self-signup (closes after deadline)
+- `POST /api/push/subscribe`, `POST /api/push/unsubscribe`
+- `GET /api/chat`, `POST /api/chat`
+
+### Admin (`Authorization: Bearer <adminToken>`)
 - `POST /api/players`, `DELETE /api/players/:id`
 - `POST /api/phases` — `{ "Brazil": "r16", ... }`
 - `POST /api/standings` — `{ "A": { "first": "...", "second": "..." }, ... }`
+- `POST /api/matches/:id/score` — manual score override (sets `manual_score=true`,
+  immune to sync overwrites)
+- `POST /api/matches/:id/upset` — toggle upset flag
 - `POST /api/sync-now` — force an immediate football-data sync
+- `DELETE /api/chat/:id` — moderation
+
+## Scoring rules
+
+Per match (`services/scorePicks.js`):
+- **+3** exact scoreline (home AND away correct)
+- **+1** correct result (winner, or draw when both predicted and actual are draws)
+- **0** otherwise
+
+Plus a per-group bonus, only when ALL group matches are FINISHED
+(`services/groupBonus.js`):
+- **+2** 1st AND 2nd correct, right order
+- **+1** 1st AND 2nd correct, wrong order
+- **0** otherwise
+
+Predictions are insert-only (`ON CONFLICT … DO NOTHING`) — a submitted pick can
+never be changed.
 
 ## Environment variables
 
