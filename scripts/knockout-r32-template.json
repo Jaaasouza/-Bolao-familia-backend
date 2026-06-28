@@ -1,0 +1,102 @@
+{
+  "stage": "LAST_32",
+  "note": "Fill in any null/missing team. Use canonical names from teamAliases.js CANONICAL.",
+  "assignments": [
+    {
+      "id": 537417,
+      "utc_date": "2026-06-28T19:00:00.000Z",
+      "home": "South Africa",
+      "away": "Canada"
+    },
+    {
+      "id": 537423,
+      "utc_date": "2026-06-29T17:00:00.000Z",
+      "home": "Brazil",
+      "away": "Japan"
+    },
+    {
+      "id": 537415,
+      "utc_date": "2026-06-29T20:30:00.000Z",
+      "home": "Germany",
+      "away": null
+    },
+    {
+      "id": 537418,
+      "utc_date": "2026-06-30T01:00:00.000Z",
+      "home": "Netherlands",
+      "away": "Morocco"
+    },
+    {
+      "id": 537424,
+      "utc_date": "2026-06-30T17:00:00.000Z",
+      "home": "Ivory Coast",
+      "away": null
+    },
+    {
+      "id": 537416,
+      "utc_date": "2026-06-30T21:00:00.000Z",
+      "home": null,
+      "away": null
+    },
+    {
+      "id": 537425,
+      "utc_date": "2026-07-01T01:00:00.000Z",
+      "home": "Mexico",
+      "away": null
+    },
+    {
+      "id": 537426,
+      "utc_date": "2026-07-01T16:00:00.000Z",
+      "home": null,
+      "away": null
+    },
+    {
+      "id": 537422,
+      "utc_date": "2026-07-01T20:00:00.000Z",
+      "home": null,
+      "away": null
+    },
+    {
+      "id": 537421,
+      "utc_date": "2026-07-02T00:00:00.000Z",
+      "home": "USA",
+      "away": "Bosnia-Herzegovina"
+    },
+    {
+      "id": 537420,
+      "utc_date": "2026-07-02T19:00:00.000Z",
+      "home": null,
+      "away": null
+    },
+    {
+      "id": 537419,
+      "utc_date": "2026-07-02T23:00:00.000Z",
+      "home": null,
+      "away": null
+    },
+    {
+      "id": 537429,
+      "utc_date": "2026-07-03T03:00:00.000Z",
+      "home": "Switzerland",
+      "away": null
+    },
+    {
+      "id": 537428,
+      "utc_date": "2026-07-03T18:00:00.000Z",
+      "home": "Australia",
+      "away": null
+    },
+    {
+      "id": 537427,
+      "utc_date": "2026-07-03T22:00:00.000Z",
+      "home": "Argentina",
+      "away": null
+    },
+    {
+      "id": 537430,
+      "utc_date": "2026-07-04T01:30:00.000Z",
+      "home": null,
+      "away": null
+    }
+  ]
+}

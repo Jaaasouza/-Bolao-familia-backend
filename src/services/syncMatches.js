@@ -5,9 +5,13 @@ const db = require('../db/pool');
 // Upsert a list of normalized match rows. Shared by the football-data sync and
 // the ESPN schedule seeder, so both go through the same protective merge:
 //   - admin manual scores (manual_score) are never overwritten;
+//   - admin manual teams (manual_teams) are never overwritten — used when
+//     the source still has null home_team/away_team for knockout fixtures;
 //   - a FINISHED row is immutable to the sync (a lagging source must never
 //     un-finish a game or wipe its points);
 //   - a known score is never nulled; status only moves forward;
+//   - a known team name is never nulled (e.g. football-data sometimes briefly
+//     loses team assignments on knockout fixtures during bracket transitions);
 //   - espn_id is filled when a source provides it and kept otherwise.
 // `stateKey` records the outcome in sync_state for /api/sync-status.
 async function upsertMatches(matches, actor = 'scheduler', eventName = 'matches.sync', stateKey = 'last_sync_matches') {
@@ -27,8 +31,14 @@ async function upsertMatches(matches, actor = 'scheduler', eventName = 'matches.
              utc_date     = EXCLUDED.utc_date,
              stage        = EXCLUDED.stage,
              group_name   = EXCLUDED.group_name,
-             home_team    = EXCLUDED.home_team,
-             away_team    = EXCLUDED.away_team,
+             home_team    = CASE
+                              WHEN matches.manual_teams THEN matches.home_team
+                              WHEN EXCLUDED.home_team IS NULL THEN matches.home_team
+                              ELSE EXCLUDED.home_team END,
+             away_team    = CASE
+                              WHEN matches.manual_teams THEN matches.away_team
+                              WHEN EXCLUDED.away_team IS NULL THEN matches.away_team
+                              ELSE EXCLUDED.away_team END,
              status       = CASE
                               WHEN matches.manual_score THEN matches.status
                               WHEN matches.status = 'FINISHED' THEN 'FINISHED'

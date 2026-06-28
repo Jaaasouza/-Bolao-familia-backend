@@ -344,6 +344,21 @@ const MIGRATIONS = [
       await client.query('CREATE INDEX IF NOT EXISTS idx_chat_channel_created ON chat_messages(channel, created_at)');
     },
   },
+  {
+    version: 19,
+    name: 'matches_manual_teams',
+    up: async (client) => {
+      // Admin-entered team assignments for knockout fixtures. football-data leaves
+      // home_team / away_team null until it propagates the bracket from the group
+      // standings, which can lag by hours/days. When TRUE, the sync upsert must
+      // NOT overwrite the team names — the admin is the source of truth for them.
+      // Score sync still flows normally (the live overlay can drop a score in
+      // even when teams were admin-set).
+      await client.query(
+        'ALTER TABLE matches ADD COLUMN IF NOT EXISTS manual_teams BOOLEAN NOT NULL DEFAULT FALSE'
+      );
+    },
+  },
 ];
 
 module.exports = { MIGRATIONS };

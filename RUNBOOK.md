@@ -166,6 +166,70 @@ Wait the window or log in successfully to reset.
 
 ---
 
+## 7. Fill in knockout teams when football-data lags
+
+Symptom: after a group stage ends, knockout fixtures (R32 / R16 / QF / SF /
+Final) show null `home_team` / `away_team` in `/api/matches`. football-data
+sometimes takes hours/days to propagate the bracket — meanwhile players can't
+pick those games.
+
+Quick diagnostic — how many knockout fixtures are missing teams?
+
+```bash
+curl -s https://<backend>.up.railway.app/api/matches | jq '
+  [.matches[]
+   | select(.stage | test("LAST_|QUARTER_|SEMI_|FINAL"))
+   | select(.home_team == null or .away_team == null)]
+  | group_by(.stage) | map({stage: .[0].stage, missing: length})'
+```
+
+Fix — fill them in via the admin endpoint (`POST /api/matches/:id/teams`,
+v19 migration). `manual_teams = true` makes the entry immune to future
+sync overwrites.
+
+### One match at a time
+
+```bash
+TOKEN=<admin JWT from /api/auth/login>
+curl -X POST https://<backend>.up.railway.app/api/matches/<id>/teams \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"home": "Germany", "away": "Ivory Coast"}'
+```
+
+### Bulk fill (R32, 16 fixtures at once)
+
+`scripts/fill-knockout-teams.js` POSTs the bracket from a JSON file. A
+template seeded with the current state is at
+`scripts/knockout-r32-template.json`:
+
+```bash
+# Edit the template — fill in the null sides with canonical team names
+# (see services/teamAliases.js CANONICAL). The script is idempotent — entries
+# whose teams already match are skipped.
+
+# Get an admin token
+TOKEN=$(curl -s -X POST https://<backend>.up.railway.app/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"password":"<your-pin>"}' | jq -r .token)
+
+# Dry-run first
+BACKEND=https://<backend>.up.railway.app ADMIN_TOKEN=$TOKEN \
+  node scripts/fill-knockout-teams.js scripts/knockout-r32-template.json --dry
+
+# Apply
+BACKEND=https://<backend>.up.railway.app ADMIN_TOKEN=$TOKEN \
+  node scripts/fill-knockout-teams.js scripts/knockout-r32-template.json
+```
+
+When football-data eventually catches up and starts pushing the same
+assignments, the sync upsert sees `manual_teams = TRUE` and leaves the
+admin values alone (only score / status / stage / utc_date still flow). If
+later you want sync to take over again, POST `{home, away, manual: false}`
+to clear the flag.
+
+---
+
 ## Rollback
 
 If anything goes wrong:
