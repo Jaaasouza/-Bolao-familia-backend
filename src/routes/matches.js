@@ -98,4 +98,62 @@ router.post('/api/matches/:id/score', requireRole('admin'), async (req, res, nex
   }
 });
 
+// Admin: set/clear home/away team names on a fixture. Used for knockout matches
+// whose teams football-data hasn't propagated yet (lag after a group ends, or
+// the bracket source itself is temporarily incomplete). When manual!==false the
+// fixture is pinned so the football-data sync won't overwrite the names later.
+// Body: { home, away, manual? } — pass an empty string or null to clear a side.
+router.post('/api/matches/:id/teams', requireRole('admin'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: 'invalid match id' });
+    const b = req.body || {};
+    const norm = (v) => {
+      if (v === null || v === undefined) return null;
+      const s = String(v).trim();
+      return s.length ? s : null;
+    };
+    const home = norm(b.home);
+    const away = norm(b.away);
+    if (home === null && away === null) {
+      return res.status(400).json({ error: 'provide at least one of home / away' });
+    }
+    const manual = b.manual !== false;
+
+    const { rows } = await db.query('SELECT id, home_team, away_team FROM matches WHERE id = $1', [id]);
+    if (!rows.length) return res.status(404).json({ error: 'match not found' });
+    const before = rows[0];
+    // Preserve the existing side when the request omits it (null), so an admin
+    // can set just one slot at a time.
+    const nextHome = home === null ? before.home_team : home;
+    const nextAway = away === null ? before.away_team : away;
+
+    await emit(
+      'match.teams',
+      {
+        actor: req.auth.role,
+        entity: 'match',
+        entityId: id,
+        data: {
+          from: { home_team: before.home_team, away_team: before.away_team },
+          to: { home_team: nextHome, away_team: nextAway },
+          manual,
+        },
+      },
+      async (client) => {
+        await client.query(
+          `UPDATE matches
+              SET home_team = $2, away_team = $3, manual_teams = $4,
+                  last_updated = NOW(), synced_at = NOW()
+            WHERE id = $1`,
+          [id, nextHome, nextAway, manual]
+        );
+      }
+    );
+    res.json({ ok: true, id, home_team: nextHome, away_team: nextAway, manual });
+  } catch (e) {
+    next(e);
+  }
+});
+
 module.exports = router;
