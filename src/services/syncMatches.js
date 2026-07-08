@@ -182,13 +182,26 @@ async function syncSecondary(actor = 'scheduler') {
 //   - still IN_PLAY/PAUSED only once 4h30 have passed (no match runs that long,
 //     even with extra time + pens + a long break) → ESPN must have abandoned it.
 // Never touches admin-set matches.
+// Knockout stages that can never legitimately end in a draw. Kept in sync with
+// espnLive.KNOCKOUT_STAGES — a self-heal that force-draws these would trap
+// shootout results as DRAW even after the upsert's DRAW→decisive branch, because
+// the admin might later pin the row (manual_score=TRUE) and lock it.
+const KNOCKOUT_STAGES_SQL = "('LAST_32','LAST_16','QUARTER_FINALS','SEMI_FINALS','THIRD_PLACE','FINAL')";
+
 async function settleStaleMatches() {
   const { rowCount } = await db.query(
     `UPDATE matches
         SET status = 'FINISHED',
-            winner = CASE WHEN home_score > away_score THEN 'HOME_TEAM'
-                          WHEN home_score < away_score THEN 'AWAY_TEAM'
-                          ELSE 'DRAW' END,
+            winner = CASE
+                       WHEN home_score > away_score THEN 'HOME_TEAM'
+                       WHEN home_score < away_score THEN 'AWAY_TEAM'
+                       -- Equal scores in a knockout mean the game went (or is
+                       -- going) to pens. Leave winner NULL so a later sync
+                       -- with the shootout result can heal via the upsert's
+                       -- DRAW→decisive branch. Group stage keeps DRAW.
+                       WHEN stage IN ${KNOCKOUT_STAGES_SQL} THEN NULL
+                       ELSE 'DRAW'
+                     END,
             last_updated = NOW()
       WHERE manual_score = FALSE
         AND status <> 'FINISHED'

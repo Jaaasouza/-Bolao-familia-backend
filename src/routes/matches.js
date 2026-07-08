@@ -59,8 +59,19 @@ router.post('/api/matches/:id/upset', requireRole('admin'), async (req, res, nex
 });
 
 // Admin: set/clear a match score manually (override when the live feed lags).
-// Body: { home, away, status?, manual? }. When manual!==false the match is
-// pinned so the football-data sync won't overwrite it. Fires live notifications.
+// Body: { home, away, status?, manual?, winner? }. When manual!==false the
+// match is pinned so the football-data sync won't overwrite it. Fires live
+// notifications.
+//
+// `winner` in the body is an optional override for the shootout case: an
+// admin who knows the pens result can send winner='HOME_TEAM'/'AWAY_TEAM'
+// alongside the 0-0 regulation scoreline. Without the override, an equal
+// scoreline on a knockout stage saves winner=NULL (never DRAW) so the sync
+// self-heal can take over once FD/ESPN carries the pens result — and the
+// row isn't stuck on DRAW after being pinned with manual_score.
+const KNOCKOUT_STAGES_ROUTE = new Set([
+  'LAST_32', 'LAST_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'THIRD_PLACE', 'FINAL',
+]);
 router.post('/api/matches/:id/score', requireRole('admin'), async (req, res, next) => {
   try {
     const id = Number(req.params.id);
@@ -76,9 +87,32 @@ router.post('/api/matches/:id/score', requireRole('admin'), async (req, res, nex
     const status = typeof b.status === 'string' && allowed.has(b.status)
       ? b.status
       : (home !== null && away !== null ? 'IN_PLAY' : 'TIMED');
-    const winner = status === 'FINISHED' && home !== null && away !== null
-      ? (home > away ? 'HOME_TEAM' : home < away ? 'AWAY_TEAM' : 'DRAW')
-      : null;
+    const validWinners = new Set(['HOME_TEAM', 'AWAY_TEAM', 'DRAW']);
+    const overrideWinner = typeof b.winner === 'string' && validWinners.has(b.winner) ? b.winner : null;
+
+    // Need the stage to know whether a level scoreline can legitimately be a
+    // DRAW (group) or must stay null pending a shootout result (knockout).
+    const { rows: stageRows } = await db.query('SELECT stage FROM matches WHERE id = $1', [id]);
+    const stage = stageRows[0] && stageRows[0].stage;
+    const isKnockout = KNOCKOUT_STAGES_ROUTE.has(stage);
+
+    let winner = null;
+    if (status === 'FINISHED' && home !== null && away !== null) {
+      // Baseline from the scoreline. Level scores in a knockout stay NULL so
+      // the sync self-heal can fill the shootout winner once it lands.
+      if (home > away) winner = 'HOME_TEAM';
+      else if (home < away) winner = 'AWAY_TEAM';
+      else winner = isKnockout ? null : 'DRAW';
+
+      // Optional override is honoured only when it RESOLVES an ambiguity —
+      // i.e. the baseline is NULL (level scoreline on a knockout) and the
+      // admin explicitly picked a side. An override that contradicts a
+      // decisive scoreline is ignored: we never let the manual winner
+      // disagree with the scoreline.
+      if (overrideWinner && winner === null && overrideWinner !== 'DRAW') {
+        winner = overrideWinner;
+      }
+    }
 
     await emit(
       'match.score',
@@ -92,7 +126,7 @@ router.post('/api/matches/:id/score', requireRole('admin'), async (req, res, nex
       }
     );
     try { await require('../services/push').notifyMatchEvents(); } catch { /* best-effort */ }
-    res.json({ ok: true, id, home, away, status, manual });
+    res.json({ ok: true, id, home, away, status, manual, winner });
   } catch (e) {
     next(e);
   }

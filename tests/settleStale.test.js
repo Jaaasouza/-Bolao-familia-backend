@@ -26,4 +26,15 @@ describe('settleStaleMatches', () => {
     expect(sql).toMatch(/INTERVAL '4 hours 30 minutes'/);
     expect(sql).toMatch(/IN_PLAY/);
   });
+
+  test('never force-writes DRAW on a knockout stage (shootout self-heal preserved)', async () => {
+    db.query.mockResolvedValue({ rowCount: 0 });
+    await settleStaleMatches();
+    const sql = db.query.mock.calls[0][0];
+    // Knockout stages must get winner=NULL when scores are level (so the
+    // upsert's DRAW→decisive branch can later heal it once pens land).
+    expect(sql).toMatch(/WHEN stage IN \('LAST_32','LAST_16','QUARTER_FINALS','SEMI_FINALS','THIRD_PLACE','FINAL'\) THEN NULL/);
+    // Group stage still legitimately settles to DRAW.
+    expect(sql).toMatch(/ELSE 'DRAW'/);
+  });
 });
