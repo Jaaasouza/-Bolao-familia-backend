@@ -30,6 +30,68 @@ describe('mapMatch', () => {
     expect(m.home_score).toBeNull();
     expect(m.winner).toBeNull();
   });
+
+  // Regression: R16 Switzerland 0-0 Colombia (won by CH on pens) was stored
+  // as winner=DRAW because FD sent winner=null. The mapped row now derives
+  // the winner from the fullTime aggregate when duration=PENALTY_SHOOTOUT.
+  test('derives winner from fullTime aggregate on a shootout when FD says null', () => {
+    const m = mapMatch({
+      id: 537382,
+      stage: 'LAST_16',
+      homeTeam: { name: 'Switzerland' },
+      awayTeam: { name: 'Colombia' },
+      score: {
+        winner: null,
+        duration: 'PENALTY_SHOOTOUT',
+        fullTime: { home: 4, away: 3 },
+        regularTime: { home: 0, away: 0 },
+        extraTime: { home: 0, away: 0 },
+        penalties: { home: 3, away: 3 },
+      },
+    });
+    expect(m.winner).toBe('HOME_TEAM');
+    // Display score should be the regulation result, not the shootout aggregate.
+    expect(m.home_score).toBe(0);
+    expect(m.away_score).toBe(0);
+  });
+
+  test('picks AWAY_TEAM when the shootout aggregate favours the away side', () => {
+    const m = mapMatch({
+      id: 42,
+      stage: 'LAST_16',
+      homeTeam: { name: 'Portugal' },
+      awayTeam: { name: 'Croatia' },
+      score: {
+        winner: null,
+        duration: 'PENALTY_SHOOTOUT',
+        fullTime: { home: 3, away: 4 },
+        regularTime: { home: 1, away: 1 },
+      },
+    });
+    expect(m.winner).toBe('AWAY_TEAM');
+    expect(m.home_score).toBe(1);
+    expect(m.away_score).toBe(1);
+  });
+
+  test('respects FD winner when it is populated (no derivation needed)', () => {
+    const m = mapMatch({
+      id: 7,
+      stage: 'GROUP_STAGE',
+      score: { winner: 'AWAY_TEAM', duration: 'REGULAR', fullTime: { home: 0, away: 1 } },
+    });
+    expect(m.winner).toBe('AWAY_TEAM');
+    expect(m.home_score).toBe(0);
+    expect(m.away_score).toBe(1);
+  });
+
+  test('leaves a group-stage 0-0 draw alone (no shootout, no forced winner)', () => {
+    const m = mapMatch({
+      id: 8,
+      stage: 'GROUP_STAGE',
+      score: { winner: 'DRAW', duration: 'REGULAR', fullTime: { home: 0, away: 0 } },
+    });
+    expect(m.winner).toBe('DRAW');
+  });
 });
 
 describe('fetchAllMatches', () => {

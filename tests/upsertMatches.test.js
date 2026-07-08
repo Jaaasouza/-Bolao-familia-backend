@@ -51,4 +51,24 @@ describe('upsertMatches — merge protections', () => {
     expect(sql).toMatch(/WHEN EXCLUDED\.home_team IS NULL THEN matches\.home_team/);
     expect(sql).toMatch(/WHEN EXCLUDED\.away_team IS NULL THEN matches\.away_team/);
   });
+
+  test('self-heals a stuck DRAW when a decisive winner arrives (shootout fix)', async () => {
+    // In a knockout there's no draw — but FD (and sometimes ESPN before the
+    // shootout ends) can leave the row on DRAW. The upsert must let a later
+    // sync promote DRAW → HOME_TEAM/AWAY_TEAM even if the row is FINISHED.
+    await upsertMatches([
+      { id: 1, utc_date: '2026-06-29', status: 'FINISHED', stage: 'LAST_16', group_name: null,
+        home_team: 'Switzerland', away_team: 'Colombia', home_score: 0, away_score: 0,
+        winner: 'HOME_TEAM', last_updated: null, raw: {} },
+    ]);
+    const sql = getUpsertSql();
+    // The healing clause must run BEFORE the "FINISHED locks winner" clause,
+    // otherwise the DRAW stays permanent.
+    expect(sql).toMatch(/WHEN matches\.winner = 'DRAW'[\s\S]+EXCLUDED\.winner IN \('HOME_TEAM', 'AWAY_TEAM'\)[\s\S]+THEN EXCLUDED\.winner/);
+    const healIdx = sql.search(/matches\.winner = 'DRAW'/);
+    const finishedLockIdx = sql.search(/WHEN matches\.status = 'FINISHED' THEN matches\.winner/);
+    expect(healIdx).toBeGreaterThan(-1);
+    expect(finishedLockIdx).toBeGreaterThan(-1);
+    expect(healIdx).toBeLessThan(finishedLockIdx);
+  });
 });

@@ -67,7 +67,16 @@ describe('mapEspnEvent', () => {
       home: 'Brazil', away: 'Morocco', hs: 1, as: 1,
       state: 'post', name: 'STATUS_FULL_TIME', homePen: 4, awayPen: 3,
     }));
-    expect(ev.liveEvents.pens).toEqual({ home: 4, away: 3, winner: 'Brazil' });
+    expect(ev.liveEvents.pens).toEqual({ home: 4, away: 3, winner: 'Brazil', winnerSide: 'HOME_TEAM' });
+  });
+
+  test('penalty shootout carries winnerSide=AWAY_TEAM when the away side wins', () => {
+    const ev = mapEspnEvent(espnEvent({
+      home: 'Portugal', away: 'Croatia', hs: 1, as: 1,
+      state: 'post', name: 'STATUS_FULL_TIME', homePen: 3, awayPen: 4,
+    }));
+    expect(ev.liveEvents.pens.winnerSide).toBe('AWAY_TEAM');
+    expect(ev.liveEvents.pens.winner).toBe('Croatia');
   });
 });
 
@@ -195,6 +204,120 @@ describe('overlayEspnLive', () => {
     expect(value.count).toBe(1);
     expect(value.fixtures[0].home).toBe('Atlantis');
     expect(value.fixtures[0].away).toBe('Wakanda');
+  });
+
+  test('promotes a regulation-draw knockout to the shootout winner', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        events: [espnEvent({
+          home: 'Switzerland', away: 'Colombia', hs: 0, as: 0,
+          state: 'post', name: 'STATUS_FULL_TIME', homePen: 5, awayPen: 4,
+        })],
+      }),
+    });
+    // R16 row: IN_PLAY going to FINISHED — new territory for the overlay, so
+    // it should write the pens winner instead of DRAW.
+    db.query
+      .mockResolvedValueOnce({ rows: [{
+        id: 537382,
+        home_team: 'Switzerland',
+        away_team: 'Colombia',
+        status: 'IN_PLAY',
+        home_score: 0,
+        away_score: 0,
+        manual_score: false,
+        espn_id: null,
+        stage: 'LAST_16',
+      }] })
+      .mockResolvedValue({ rows: [] });
+
+    await overlayEspnLive();
+    const upd = db.query.mock.calls.find((c) => /SET status/.test(c[0]));
+    // params: [id, status, homeScore, awayScore, winner, minute, liveEvents, espnId]
+    expect(upd[1].slice(0, 5)).toEqual([537382, 'FINISHED', 0, 0, 'HOME_TEAM']);
+  });
+
+  test('self-heals a FINISHED knockout row stuck on DRAW when ESPN carries the pens result', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        events: [espnEvent({
+          home: 'Switzerland', away: 'Colombia', hs: 0, as: 0,
+          state: 'post', name: 'STATUS_FULL_TIME', homePen: 5, awayPen: 4,
+        })],
+      }),
+    });
+    // Existing FINISHED row with the wrong winner — normally we'd skip, but
+    // the knockout+pens self-heal path must let the update through.
+    db.query
+      .mockResolvedValueOnce({ rows: [{
+        id: 537382,
+        home_team: 'Switzerland',
+        away_team: 'Colombia',
+        status: 'FINISHED',
+        home_score: 0,
+        away_score: 0,
+        manual_score: false,
+        espn_id: null,
+        stage: 'LAST_16',
+      }] })
+      .mockResolvedValue({ rows: [] });
+
+    await overlayEspnLive();
+    const upd = db.query.mock.calls.find((c) => /SET status/.test(c[0]));
+    expect(upd).toBeTruthy();
+    expect(upd[1][4]).toBe('HOME_TEAM'); // winner, now healed
+  });
+
+  test('never writes DRAW on a regulation-level knockout with no pens data', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        events: [espnEvent({
+          home: 'Switzerland', away: 'Colombia', hs: 0, as: 0,
+          state: 'post', name: 'STATUS_FULL_TIME',
+        })],
+      }),
+    });
+    db.query
+      .mockResolvedValueOnce({ rows: [{
+        id: 537382,
+        home_team: 'Switzerland',
+        away_team: 'Colombia',
+        status: 'IN_PLAY',
+        home_score: 0,
+        away_score: 0,
+        manual_score: false,
+        espn_id: null,
+        stage: 'LAST_16',
+      }] })
+      .mockResolvedValue({ rows: [] });
+
+    await overlayEspnLive();
+    const upd = db.query.mock.calls.find((c) => /SET status/.test(c[0]));
+    // Winner (index 4) must NOT be DRAW — a knockout has no draw. Leave null
+    // so the next sync can heal once pens land.
+    expect(upd[1][4]).toBeNull();
+  });
+
+  test('still writes DRAW on a group-stage 0-0 (draws remain valid there)', async () => {
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: () => Promise.resolve({
+        events: [espnEvent({
+          home: 'Mexico', away: 'South Africa', hs: 0, as: 0,
+          state: 'post', name: 'STATUS_FULL_TIME',
+        })],
+      }),
+    });
+    db.query
+      .mockResolvedValueOnce({ rows: [{ ...liveRow, status: 'IN_PLAY', stage: 'GROUP_STAGE' }] })
+      .mockResolvedValue({ rows: [] });
+
+    await overlayEspnLive();
+    const upd = db.query.mock.calls.find((c) => /SET status/.test(c[0]));
+    expect(upd[1][4]).toBe('DRAW');
   });
 
   test('does not write last_unmatched_espn when every fixture pairs', async () => {

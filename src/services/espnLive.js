@@ -15,6 +15,9 @@ const db = require('../db/pool');
 const { resolveTeamName, normalize } = require('./teamAliases');
 
 const ESPN_BASE = 'https://site.api.espn.com/apis/site/v2/sports/soccer';
+// Stages that can never legitimately end in a draw — used to gate the
+// shootout self-heal so we never rewrite a group-stage 0-0 by accident.
+const KNOCKOUT_STAGES = ['LAST_32', 'LAST_16', 'QUARTER_FINALS', 'SEMI_FINALS', 'THIRD_PLACE', 'FINAL'];
 
 function leagueCode() {
   return process.env.ESPN_LEAGUE || 'fifa.world';
@@ -69,6 +72,8 @@ function parseDetails(comp, teamById) {
 }
 
 // Penalty-shootout result, when present. ESPN puts shootoutScore on competitors.
+// winnerSide is the football-data-style code (HOME_TEAM / AWAY_TEAM) so the
+// overlay can promote a regulation-draw knockout to its real winner.
 function parsePens(homeC, awayC, nameOf) {
   const hs = homeC.shootoutScore;
   const as = awayC.shootoutScore;
@@ -76,7 +81,9 @@ function parsePens(homeC, awayC, nameOf) {
   const home = Number(hs);
   const away = Number(as);
   if (!Number.isFinite(home) || !Number.isFinite(away) || (home === 0 && away === 0)) return null;
-  return { home, away, winner: home > away ? nameOf(homeC) : nameOf(awayC) };
+  const winnerSide = home > away ? 'HOME_TEAM' : 'AWAY_TEAM';
+  const winner = home > away ? nameOf(homeC) : nameOf(awayC);
+  return { home, away, winner, winnerSide };
 }
 
 // One ESPN scoreboard event → normalized match state + key events, or null.
@@ -134,7 +141,7 @@ async function overlayEspnLive() {
 
   // Candidate matches: around now (covers late kickoffs + just-finished games).
   const { rows } = await db.query(
-    `SELECT id, home_team, away_team, status, home_score, away_score, manual_score, espn_id
+    `SELECT id, home_team, away_team, status, home_score, away_score, manual_score, espn_id, stage
        FROM matches
       WHERE utc_date BETWEEN NOW() - INTERVAL '12 hours' AND NOW() + INTERVAL '12 hours'`
   );
@@ -166,18 +173,33 @@ async function overlayEspnLive() {
     }
     // Pre-game (no live status yet) → nothing else to update.
     if (!ev.status) continue;
-    // A FINISHED row is normally final — but if ESPN is actively reporting the
-    // game as LIVE again (e.g. it was force-settled during a long stoppage),
-    // trust the live source and bring it back.
+    // A FINISHED row is normally final — but two exceptions:
+    //   (1) ESPN is actively reporting the game as LIVE again (e.g. it was
+    //       force-settled during a long stoppage); trust the live source.
+    //   (2) We stored winner=DRAW on a knockout that actually went to a
+    //       shootout, and ESPN now carries the pens result. Let the overlay
+    //       run so it can promote DRAW → HOME_TEAM/AWAY_TEAM.
     const espnLive = ev.status === 'IN_PLAY' || ev.status === 'PAUSED';
-    if (m.status === 'FINISHED' && !espnLive) continue;
+    const pens = ev.liveEvents && ev.liveEvents.pens;
+    const isKnockout = KNOCKOUT_STAGES.includes(m.stage);
+    const canHealShootout = m.status === 'FINISHED' && isKnockout && pens && pens.winnerSide;
+    if (m.status === 'FINISHED' && !espnLive && !canHealShootout) continue;
 
     const changed = m.status !== ev.status
       || (m.home_score ?? null) !== (ev.homeScore ?? null)
       || (m.away_score ?? null) !== (ev.awayScore ?? null);
-    const winner = ev.status === 'FINISHED' && ev.homeScore != null && ev.awayScore != null
-      ? (ev.homeScore > ev.awayScore ? 'HOME_TEAM' : ev.homeScore < ev.awayScore ? 'AWAY_TEAM' : 'DRAW')
-      : null;
+    // Winner logic:
+    //   - regulation had a clear winner → HOME_TEAM/AWAY_TEAM
+    //   - regulation ended level in a knockout: use ESPN's pens winner if
+    //     present, else leave null (never write DRAW to a knockout row)
+    //   - level in group stage → DRAW
+    const winner = ev.status !== 'FINISHED' || ev.homeScore == null || ev.awayScore == null
+      ? null
+      : ev.homeScore > ev.awayScore ? 'HOME_TEAM'
+      : ev.homeScore < ev.awayScore ? 'AWAY_TEAM'
+      : pens && pens.winnerSide ? pens.winnerSide
+      : isKnockout ? null
+      : 'DRAW';
 
     // Refresh score/status/minute + the ESPN id. live_events is only written
     // when the scoreboard actually carried events/pens — so it never clobbers
