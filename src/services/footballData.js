@@ -26,6 +26,28 @@ function canCall() {
 
 // Flatten the football-data.org match shape into our row shape.
 function mapMatch(m) {
+  const score = m.score || {};
+  const isShootout = score.duration === 'PENALTY_SHOOTOUT';
+
+  // For a knockout game decided on pens, football-data crams the aggregate
+  // (regulation + shootout) into fullTime — e.g. Switzerland 4-3 Colombia
+  // after a 0-0 regulation. That's misleading as a "score" so we display the
+  // regulation result instead when regularTime is present.
+  const displayScore = isShootout && score.regularTime ? score.regularTime : score.fullTime;
+  const home_score = displayScore ? displayScore.home ?? null : null;
+  const away_score = displayScore ? displayScore.away ?? null : null;
+
+  // Football-data has been observed sending winner: null on a finished
+  // shootout even though its own fullTime aggregate is decisive. In a
+  // knockout there is no draw — derive the winner from the aggregate so
+  // the pool doesn't get stuck on a bogus DRAW.
+  let winner = score.winner || null;
+  if (!winner && isShootout && score.fullTime
+      && score.fullTime.home != null && score.fullTime.away != null) {
+    if (score.fullTime.home > score.fullTime.away) winner = 'HOME_TEAM';
+    else if (score.fullTime.home < score.fullTime.away) winner = 'AWAY_TEAM';
+  }
+
   return {
     id: m.id,
     utc_date: m.utcDate || null,
@@ -34,9 +56,9 @@ function mapMatch(m) {
     group_name: m.group || null,
     home_team: resolveTeamName((m.homeTeam && m.homeTeam.name) || null),
     away_team: resolveTeamName((m.awayTeam && m.awayTeam.name) || null),
-    home_score: m.score && m.score.fullTime ? m.score.fullTime.home ?? null : null,
-    away_score: m.score && m.score.fullTime ? m.score.fullTime.away ?? null : null,
-    winner: m.score ? m.score.winner || null : null,
+    home_score,
+    away_score,
+    winner,
     last_updated: m.lastUpdated || null,
     // Full payload (minute, half-time, venue, matchday, referees…) is kept here
     // and returned to the frontend, which reads what it needs from raw.

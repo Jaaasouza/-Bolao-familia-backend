@@ -57,6 +57,14 @@ async function upsertMatches(matches, actor = 'scheduler', eventName = 'matches.
                               ELSE EXCLUDED.away_score END,
              winner       = CASE
                               WHEN matches.manual_score THEN matches.winner
+                              -- Self-heal a knockout shootout that got stuck on
+                              -- DRAW because the first source (FD or ESPN) sent
+                              -- winner=null on the regulation-time draw. Once
+                              -- any source delivers a decisive HOME_TEAM /
+                              -- AWAY_TEAM, take it — a knockout has no draw.
+                              WHEN matches.winner = 'DRAW'
+                                   AND EXCLUDED.winner IN ('HOME_TEAM', 'AWAY_TEAM')
+                                   THEN EXCLUDED.winner
                               WHEN matches.status = 'FINISHED' THEN matches.winner
                               ELSE COALESCE(EXCLUDED.winner, matches.winner) END,
              espn_id      = COALESCE(EXCLUDED.espn_id, matches.espn_id),
