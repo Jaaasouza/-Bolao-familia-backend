@@ -2,7 +2,7 @@ jest.mock('../src/db/pool');
 
 const db = require('../src/db/pool');
 const {
-  backfillBracket, isPlaceholderName, mapEvent,
+  backfillBracket, isPlaceholderName, mapEvent, expandDatesByOne,
 } = require('../src/services/bracketBackfill');
 
 beforeEach(() => { jest.clearAllMocks(); });
@@ -84,7 +84,9 @@ describe('backfillBracket', () => {
     });
 
     const r = await backfillBracket();
-    expect(r).toMatchObject({ missing: 1, filled: 1, scanned: 1, dates: 1 });
+    // dates=3 because we now query D-1/D/D+1 for each base date; the event only
+    // exists once in the merged index, so filled/scanned still line up.
+    expect(r).toMatchObject({ missing: 1, filled: 1, dates: 3 });
 
     const upd = db.query.mock.calls.find((c) => /UPDATE matches/.test(c[0]));
     expect(upd[0]).toMatch(/manual_teams = FALSE/);
@@ -121,17 +123,24 @@ describe('backfillBracket', () => {
         missingRow({ id: 2, utc_date: '2026-07-02T19:00:00.000Z' }),
       ] })
       .mockResolvedValue({ rows: [] });
-    global.fetch = jest.fn()
-      .mockResolvedValueOnce({ ok: false, status: 503, json: () => ({}) }) // first date errors
-      .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve({ events: [espnEvent('Spain', 'Austria', '2026-07-02T19:00Z')] }) });
-    // Mock the actual fetch invocation since we may also need a non-OK to throw
-    global.fetch = jest.fn()
-      .mockImplementationOnce(() => Promise.reject(new Error('espn 503')))
-      .mockImplementationOnce(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ events: [espnEvent('Spain', 'Austria', '2026-07-02T19:00Z')] }) }));
+    // With the D±1 widened window we can query up to 4 unique days
+    // (20260630, 20260701, 20260702, 20260703). Match by url so ordering
+    // doesn't matter.
+    global.fetch = jest.fn().mockImplementation((url) => {
+      if (url.includes('20260701')) return Promise.reject(new Error('espn 503'));
+      if (url.includes('20260702')) return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ events: [espnEvent('Spain', 'Austria', '2026-07-02T19:00Z')] }),
+      });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ events: [] }) });
+    });
 
     const r = await backfillBracket();
-    expect(r.dates).toBe(2);
-    // One filled (the second date succeeded).
+    // 20260630, 20260701, 20260702, 20260703 = 4 days scanned.
+    expect(r.dates).toBe(4);
+    // The 20260701 fetch throws but the loop continues; 20260702 fills id=2.
+    // id=1 (kickoff 2026-07-01T20:00Z) has no ESPN event in any of the mocked
+    // days, so it stays null.
     expect(r.filled).toBe(1);
   });
 
@@ -160,6 +169,52 @@ describe('backfillBracket', () => {
     const ins = db.query.mock.calls.find((c) => /last_bracket_backfill/.test(c[0]));
     expect(ins).toBeTruthy();
     const payload = JSON.parse(ins[1][0]);
-    expect(payload).toMatchObject({ missing: 1, filled: 1, dates: 1 });
+    expect(payload).toMatchObject({ missing: 1, filled: 1, dates: 3 });
+  });
+
+  // Regression: QF #4 kickoff 2026-07-12T01:00Z was showing "? vs ?" in the
+  // pool because bracketBackfill only queried ESPN's 20260712 scoreboard,
+  // which is empty — ESPN indexes that game under 20260711 (US-local
+  // tournament day). Now that we widen to D±1 the event is found.
+  test('fills a fixture whose ESPN event is on the previous UTC day', async () => {
+    db.query
+      .mockResolvedValueOnce({ rows: [missingRow({
+        id: 537386,
+        utc_date: '2026-07-12T01:00:00.000Z',
+        home_team: null,
+        away_team: null,
+        stage: 'QUARTER_FINALS',
+      })] })
+      .mockResolvedValue({ rows: [] });
+    global.fetch = jest.fn().mockImplementation((url) => {
+      // Only the 20260711 scoreboard actually returns the event, matching what
+      // ESPN's live API does for 00-06 UTC kickoffs.
+      if (url.includes('20260711')) return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ events: [espnEvent('Argentina', 'Switzerland', '2026-07-12T01:00Z')] }),
+      });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ events: [] }) });
+    });
+
+    const r = await backfillBracket();
+    expect(r).toMatchObject({ missing: 1, filled: 1 });
+
+    const upd = db.query.mock.calls.find((c) => /UPDATE matches/.test(c[0]));
+    expect(upd[1]).toEqual([537386, 'Argentina', 'Switzerland']);
+  });
+});
+
+describe('expandDatesByOne', () => {
+  test('adds the day before and after each entry', () => {
+    expect(expandDatesByOne(['20260712']).sort()).toEqual(['20260711', '20260712', '20260713']);
+  });
+
+  test('deduplicates overlapping windows', () => {
+    const out = expandDatesByOne(['20260711', '20260712']).sort();
+    expect(out).toEqual(['20260710', '20260711', '20260712', '20260713']);
+  });
+
+  test('crosses month boundaries', () => {
+    expect(expandDatesByOne(['20260701']).sort()).toEqual(['20260630', '20260701', '20260702']);
   });
 });
