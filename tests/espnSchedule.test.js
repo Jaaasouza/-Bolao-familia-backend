@@ -7,7 +7,7 @@ jest.mock('../src/services/syncMatches', () => ({
 const { upsertMatches } = require('../src/services/syncMatches');
 const {
   syncEspnSchedule, mapScheduleEvent, stageGroupFrom, scheduleStatus,
-  datesFromCalendar, buildWindowDates,
+  datesFromCalendar, buildWindowDates, scheduleDates,
 } = require('../src/services/espnSchedule');
 
 const groupEvent = {
@@ -107,9 +107,23 @@ describe('date helpers', () => {
     expect(datesFromCalendar({})).toEqual([]);
   });
 
+  test('datesFromCalendar expands a startDate…endDate range to every day it spans', () => {
+    expect(datesFromCalendar({ leagues: [{ calendar: [{ startDate: '2026-07-09T00:00Z', endDate: '2026-07-11T00:00Z' }] }] }))
+      .toEqual(['20260709', '20260710', '20260711']);
+  });
+
   test('buildWindowDates is inclusive day-by-day', () => {
     expect(buildWindowDates('20260611', '20260613')).toEqual(['20260611', '20260612', '20260613']);
     expect(buildWindowDates('20260613', '20260611')).toEqual([]);
+  });
+
+  test('scheduleDates always sweeps the full window, even when the calendar is sparse', () => {
+    // ESPN calendar lists only opening day, but the knockout days must still be
+    // fetched — otherwise a QF sitting on a day the calendar omits is dropped.
+    const dates = scheduleDates({ leagues: [{ calendar: ['2026-06-11T16:00Z'] }] });
+    expect(dates).toContain('20260611'); // group opener
+    expect(dates).toContain('20260710'); // a quarter-final day the calendar never listed
+    expect(dates).toContain('20260719'); // the final
   });
 });
 
@@ -129,5 +143,33 @@ describe('syncEspnSchedule', () => {
     expect(upsertMatches).toHaveBeenCalledTimes(1);
     const [rows] = upsertMatches.mock.calls[0];
     expect(rows.map((r) => r.id).sort()).toEqual([704001, 704050]);
+  });
+
+  test('captures a quarter-final on a day ESPN calendar never lists (regression)', async () => {
+    // The calendar only names opening day; the QF sits on July 10. The old
+    // calendar-only logic never fetched July 10 and dropped the fixture. Now the
+    // full window is always swept, so the QF is seeded.
+    const qf = {
+      id: '704099', date: '2026-07-10T18:00Z', name: 'Argentina vs England',
+      status: { type: { state: 'pre', name: 'STATUS_SCHEDULED' } },
+      competitions: [{
+        notes: [{ headline: 'Quarterfinal' }],
+        competitors: [
+          { homeAway: 'home', team: { displayName: 'Argentina' }, score: '' },
+          { homeAway: 'away', team: { displayName: 'England' }, score: '' },
+        ],
+      }],
+    };
+    const base = { leagues: [{ calendar: ['2026-06-11T16:00Z'] }], events: [] };
+    global.fetch = jest.fn(async (url) => {
+      const m = /dates=(\d{8})/.exec(String(url));
+      if (m && m[1] === '20260710') return { ok: true, json: async () => ({ events: [qf] }) };
+      return { ok: true, json: async () => (m ? { events: [] } : base) };
+    });
+
+    await syncEspnSchedule('test');
+    const [rows] = upsertMatches.mock.calls[0];
+    expect(rows.map((r) => r.id)).toContain(704099);
+    expect(rows.find((r) => r.id === 704099)).toMatchObject({ stage: 'QUARTER_FINALS' });
   });
 });

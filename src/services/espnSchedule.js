@@ -120,15 +120,33 @@ function toYyyymmdd(d) {
 }
 
 // Build a YYYYMMDD list from ESPN's league calendar (array of ISO strings or of
-// objects carrying startDate). Falls back to [] when the shape is unrecognised.
+// objects carrying startDate/endDate). Falls back to [] when the shape is
+// unrecognised. A range entry (startDate…endDate) is expanded to EVERY day it
+// spans — ESPN frequently lists a whole phase as one calendar entry, and taking
+// only its start day would miss every other match day inside it.
 function datesFromCalendar(data) {
   const cal = data && data.leagues && data.leagues[0] && data.leagues[0].calendar;
   if (!Array.isArray(cal)) return [];
   const out = new Set();
   for (const entry of cal) {
-    const iso = typeof entry === 'string' ? entry : (entry && (entry.startDate || entry.value));
-    const d = iso ? new Date(iso) : null;
-    if (d && !Number.isNaN(d.getTime())) out.add(toYyyymmdd(d));
+    if (typeof entry === 'string') {
+      const d = new Date(entry);
+      if (!Number.isNaN(d.getTime())) out.add(toYyyymmdd(d));
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const start = entry.startDate || entry.value;
+    const a = start ? new Date(start) : null;
+    if (!a || Number.isNaN(a.getTime())) continue;
+    const b = new Date(entry.endDate || start);
+    const last = !Number.isNaN(b.getTime()) && b >= a ? b : a;
+    for (
+      let d = new Date(Date.UTC(a.getUTCFullYear(), a.getUTCMonth(), a.getUTCDate()));
+      d <= last && out.size < 400;
+      d = new Date(d.getTime() + 86_400_000)
+    ) {
+      out.add(toYyyymmdd(d));
+    }
   }
   return [...out];
 }
@@ -157,14 +175,19 @@ async function fetchScoreboard(dateParam) {
   return res.json();
 }
 
-// Decide which days to fetch: ESPN's own calendar first, else the configured /
-// default tournament window (June 11 – July 19, overridable via env).
+// Decide which days to fetch. ALWAYS sweep the full tournament window (June 11 –
+// July 19, overridable via env), then union in whatever ESPN's own calendar
+// adds. We must never rely on the calendar alone: if it omits a day — it often
+// lists phase ranges, or drops a not-yet-scheduled knockout day — a fixture on
+// that day (e.g. the last quarter-final) would silently never be fetched, even
+// though ESPN has it. Sweeping the whole window guarantees every match day is
+// queried; de-dup by id in the seeder makes the extra calls harmless.
 function scheduleDates(baseData) {
-  const fromCal = datesFromCalendar(baseData);
-  if (fromCal.length) return fromCal.slice(0, MAX_DATES);
   const from = process.env.ESPN_DATES_FROM || '20260611';
   const to = process.env.ESPN_DATES_TO || '20260719';
-  return buildWindowDates(from, to);
+  const all = new Set(buildWindowDates(from, to));
+  for (const d of datesFromCalendar(baseData)) all.add(d);
+  return [...all].sort().slice(0, MAX_DATES);
 }
 
 // Fetch the whole schedule from ESPN and upsert it into matches. Returns
