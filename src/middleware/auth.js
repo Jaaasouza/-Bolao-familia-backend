@@ -3,7 +3,10 @@ const jwt = require('jsonwebtoken');
 function signToken(payload) {
   const secret = process.env.JWT_SECRET;
   if (!secret) throw new Error('JWT_SECRET not configured');
-  return jwt.sign(payload, secret, { expiresIn: process.env.JWT_TTL || '7d' });
+  // 30d by default so a token comfortably outlives the ~5-week tournament — an
+  // admin (or player) shouldn't get silently logged out mid-Cup. Override with
+  // JWT_TTL if a shorter session is ever wanted.
+  return jwt.sign(payload, secret, { expiresIn: process.env.JWT_TTL || '30d' });
 }
 
 // requireRole('admin') — gate a mutating endpoint behind a JWT bearer token.
