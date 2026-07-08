@@ -89,6 +89,27 @@ async function fetchScoreboard(date) {
   return (data.events || []).map(mapEvent).filter(Boolean);
 }
 
+// Widen a yyyymmdd list by ±1 day. ESPN indexes events by "tournament day"
+// (US-local for FIFA WC 2026), so a kickoff at 00:00-06:00 UTC lands in the
+// PREVIOUS day's scoreboard. Without this, e.g. QF #4 (2026-07-12T01:00Z) is
+// looked up on 20260712 (empty) instead of 20260711 (where ESPN actually
+// publishes it).
+function expandDatesByOne(dates) {
+  const set = new Set();
+  const parse = (s) => {
+    const m = /^(\d{4})(\d{2})(\d{2})$/.exec(String(s || ''));
+    return m ? new Date(Date.UTC(+m[1], +m[2] - 1, +m[3])) : null;
+  };
+  for (const d of dates) {
+    const dt = parse(d);
+    if (!dt) { set.add(d); continue; }
+    set.add(yyyymmdd(new Date(dt.getTime() - 86_400_000)));
+    set.add(d);
+    set.add(yyyymmdd(new Date(dt.getTime() + 86_400_000)));
+  }
+  return [...set];
+}
+
 // Returns { missing, filled, scanned, dates }.
 async function backfillBracket() {
   if (!enabled()) return { skipped: true };
@@ -96,10 +117,14 @@ async function backfillBracket() {
   const missing = await findMissingFixtures();
   if (!missing.length) return { missing: 0, filled: 0, scanned: 0, dates: 0 };
 
-  const dates = [...new Set(missing.map((m) => yyyymmdd(new Date(m.utc_date))))];
+  const baseDates = [...new Set(missing.map((m) => yyyymmdd(new Date(m.utc_date))))];
+  const dates = expandDatesByOne(baseDates);
 
-  let filled = 0;
   let scanned = 0;
+  // Global index — an ESPN event's epoch is unique across days, so we can
+  // safely merge events from D-1/D/D+1 into one map and pair against every
+  // missing fixture in one pass.
+  const byTime = new Map();
 
   for (const d of dates) {
     let events;
@@ -110,37 +135,33 @@ async function backfillBracket() {
       continue;
     }
     scanned += events.length;
-
-    // Index ESPN events on this date by exact kickoff epoch (matches what's in
-    // the DB — both sources are ISO UTC).
-    const byTime = new Map();
     for (const ev of events) {
       const t = ev.utc_date ? new Date(ev.utc_date).getTime() : null;
-      if (t != null) byTime.set(t, ev);
+      if (t != null && !byTime.has(t)) byTime.set(t, ev);
     }
+  }
 
-    const sameDate = missing.filter((m) => yyyymmdd(new Date(m.utc_date)) === d);
-    for (const m of sameDate) {
-      const t = new Date(m.utc_date).getTime();
-      const espn = byTime.get(t);
-      if (!espn) continue;
+  let filled = 0;
+  for (const m of missing) {
+    const t = new Date(m.utc_date).getTime();
+    const espn = byTime.get(t);
+    if (!espn) continue;
 
-      // Only fill the side that's currently null (don't disturb a half-known
-      // fixture), and only with non-placeholder names.
-      const newHome = !m.home_team && !isPlaceholderName(espn.home) ? resolveTeamName(espn.home) : null;
-      const newAway = !m.away_team && !isPlaceholderName(espn.away) ? resolveTeamName(espn.away) : null;
-      if (!newHome && !newAway) continue;
+    // Only fill the side that's currently null (don't disturb a half-known
+    // fixture), and only with non-placeholder names.
+    const newHome = !m.home_team && !isPlaceholderName(espn.home) ? resolveTeamName(espn.home) : null;
+    const newAway = !m.away_team && !isPlaceholderName(espn.away) ? resolveTeamName(espn.away) : null;
+    if (!newHome && !newAway) continue;
 
-      await db.query(
-        `UPDATE matches
-            SET home_team = COALESCE($2, home_team),
-                away_team = COALESCE($3, away_team),
-                last_updated = NOW(), synced_at = NOW()
-          WHERE id = $1 AND manual_teams = FALSE`,
-        [m.id, newHome, newAway]
-      );
-      filled += 1;
-    }
+    await db.query(
+      `UPDATE matches
+          SET home_team = COALESCE($2, home_team),
+              away_team = COALESCE($3, away_team),
+              last_updated = NOW(), synced_at = NOW()
+        WHERE id = $1 AND manual_teams = FALSE`,
+      [m.id, newHome, newAway]
+    );
+    filled += 1;
   }
 
   // Surface on /api/sync-status so operators can see when ESPN saved the day.
@@ -161,5 +182,6 @@ module.exports = {
   isPlaceholderName,
   mapEvent,
   findMissingFixtures,
+  expandDatesByOne,
   KNOCKOUT_STAGES,
 };
