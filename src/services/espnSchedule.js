@@ -114,6 +114,27 @@ function mapScheduleEvent(ev) {
   };
 }
 
+// A World Cup has exactly TWO semi-finals. ESPN's free scoreboard sometimes
+// groups the third-place play-off under the same "semi-final" label, so we end
+// up with three SEMI_FINALS fixtures and the play-off shows among the semis.
+// The play-off is always played AFTER both semis, so when more than two
+// semi-labelled fixtures exist, the later one(s) are really the third-place
+// match — reclassify them so they land in their own round. Self-limiting: with
+// a correctly-labelled source (≤2 semis) this is a no-op. Mutates in place.
+function reconcileThirdPlace(matches) {
+  const semis = matches.filter((m) => m.stage === 'SEMI_FINALS');
+  if (semis.length <= 2) return matches;
+  // Only reorder when every semi has a date; otherwise we can't tell which is
+  // the later play-off, so leave the source labels untouched.
+  if (semis.some((m) => !m.utc_date)) return matches;
+  semis.sort((a, b) => new Date(a.utc_date) - new Date(b.utc_date));
+  for (const m of semis.slice(2)) {
+    m.stage = 'THIRD_PLACE';
+    m.group_name = null;
+  }
+  return matches;
+}
+
 function pad2(n) { return String(n).padStart(2, '0'); }
 function toYyyymmdd(d) {
   return `${d.getUTCFullYear()}${pad2(d.getUTCMonth() + 1)}${pad2(d.getUTCDate())}`;
@@ -221,6 +242,7 @@ async function syncEspnSchedule(actor = 'scheduler') {
 
   const matches = [...byId.values()];
   if (!matches.length) return { count: 0, skipped: true };
+  reconcileThirdPlace(matches);
   await upsertMatches(matches, actor, 'matches.espn_schedule');
   return { count: matches.length, dates: dates.length };
 }
@@ -234,4 +256,5 @@ module.exports = {
   datesFromCalendar,
   buildWindowDates,
   scheduleDates,
+  reconcileThirdPlace,
 };
