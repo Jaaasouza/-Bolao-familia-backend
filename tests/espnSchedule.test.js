@@ -7,7 +7,7 @@ jest.mock('../src/services/syncMatches', () => ({
 const { upsertMatches } = require('../src/services/syncMatches');
 const {
   syncEspnSchedule, mapScheduleEvent, stageGroupFrom, scheduleStatus,
-  datesFromCalendar, buildWindowDates, scheduleDates,
+  datesFromCalendar, buildWindowDates, scheduleDates, reconcileThirdPlace,
 } = require('../src/services/espnSchedule');
 
 const groupEvent = {
@@ -124,6 +124,33 @@ describe('date helpers', () => {
     expect(dates).toContain('20260611'); // group opener
     expect(dates).toContain('20260710'); // a quarter-final day the calendar never listed
     expect(dates).toContain('20260719'); // the final
+  });
+});
+
+describe('reconcileThirdPlace', () => {
+  const semi = (id, date) => ({ id, stage: 'SEMI_FINALS', group_name: null, utc_date: date });
+
+  test('reclassifies the later of three semi-labelled fixtures as the third-place match', () => {
+    const ms = [
+      semi(1, '2026-07-14T18:00Z'), // real semi 1
+      semi(2, '2026-07-15T18:00Z'), // real semi 2
+      semi(3, '2026-07-18T18:00Z'), // third-place play-off (latest)
+    ];
+    reconcileThirdPlace(ms);
+    expect(ms.find((m) => m.id === 3).stage).toBe('THIRD_PLACE');
+    expect(ms.filter((m) => m.stage === 'SEMI_FINALS').map((m) => m.id).sort()).toEqual([1, 2]);
+  });
+
+  test('leaves a correctly-labelled bracket (exactly two semis) untouched', () => {
+    const ms = [semi(1, '2026-07-14T18:00Z'), semi(2, '2026-07-15T18:00Z')];
+    reconcileThirdPlace(ms);
+    expect(ms.every((m) => m.stage === 'SEMI_FINALS')).toBe(true);
+  });
+
+  test('does nothing when a semi has no date (can not order safely)', () => {
+    const ms = [semi(1, '2026-07-14T18:00Z'), semi(2, null), semi(3, '2026-07-18T18:00Z')];
+    reconcileThirdPlace(ms);
+    expect(ms.every((m) => m.stage === 'SEMI_FINALS')).toBe(true);
   });
 });
 
